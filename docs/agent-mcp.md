@@ -30,6 +30,22 @@
 
 `Agent MCP protocol` 是协议测试，不生成桌面安装包；`Full Flutter CI`、`Flutter Nightly Build` 和标签发布工作流沿用上游构建，默认不包含 MCP，不应作为 MCP 产物下载入口。
 
+### 内置私有服务器
+
+本 fork 的 MCP 构建会将 ID 服务器 `r5.ikanade.cn:21116`、中继 `r5.ikanade.cn:21117` 和公钥 `avD+qUiwBe013hPPKQjCO81ekJTDoqkxmxDXPkRMAe8=` 编译进客户端。这是公开的连接配置，不是服务端私钥或远程设备密码。
+
+采用教程的源码常量方案：在当前锁定的 `hbb_common` 上应用 `.github/patches/agent-mcp-server.diff`，修改 `RENDEZVOUS_SERVERS`、`RS_PUB_KEY`，并为 `relay-server` 添加默认值。不切换子模块分支，不修改上游发布工作流或 Actions 写权限。CI 会校验补丁后的源码；macOS 隔离包还执行原生诊断命令验证实际编译值。每份桌面产物附带 `SERVER-CONFIG.json`。
+
+本地编译同一配置时，先执行以下命令，再运行带 `--mcp` 的构建。补丁只应用一次；`--check` 失败时先检查子模块版本和本地修改，不强行覆盖：
+
+```sh
+git -C libs/hbb_common apply --check ../../.github/patches/agent-mcp-server.diff
+git -C libs/hbb_common apply ../../.github/patches/agent-mcp-server.diff
+python3 tools/mcp/verify_server_config.py --source libs/hbb_common/src/config.rs
+```
+
+这些是新配置的默认值，不强制覆盖用户已保存的服务器设置；仍需通过真实连接验证服务器可达性和公钥匹配。隔离版只作为控制端，不启动被控端注册，不能以首页「就绪」作为验收标准。其他上游工作流及未应用补丁的本地构建保持原服务器配置。
+
 ### 与正在使用的 macOS 版本隔离测试
 
 Actions 手动运行时勾选 `isolated_macos`，或在 Mac 上执行 `python3 build.py --flutter --mcp --mcp-isolated`，会生成独立的 `RustDeskMCPTest.app`。此开关仅支持 macOS，普通 `--mcp` 构建不改变身份。
