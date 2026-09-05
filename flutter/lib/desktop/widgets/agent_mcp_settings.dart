@@ -98,7 +98,7 @@ class _AgentMcpSettingsState extends State<AgentMcpSettings> {
                             text: const JsonEncoder.withIndent('  ').convert({
                           'mcpServers': {
                             'rustdesk': {
-                              'url': 'http://127.0.0.1:59940/mcp',
+                              'url': _option('agent-mcp-endpoint'),
                               'headers': {'Authorization': 'Bearer $token'}
                             }
                           }

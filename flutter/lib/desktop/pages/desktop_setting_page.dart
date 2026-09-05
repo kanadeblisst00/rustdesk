@@ -414,6 +414,10 @@ class _GeneralState extends State<_General> {
       controller: scrollController,
       children: [
         if (!isWeb) service(),
+        if (!isWeb &&
+            bind.isOutgoingOnly() &&
+            bind.mainGetLocalOption(key: 'agent-mcp-supported') == 'Y')
+          const AgentMcpSettings(),
         theme(),
         _Card(title: 'Language', children: [language()]),
         if (!isWeb) hwcodec(),

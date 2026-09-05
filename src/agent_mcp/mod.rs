@@ -1,4 +1,6 @@
 mod desktop;
+#[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
+pub(crate) mod isolated;
 mod session;
 
 use crate::flutter_ffi::SessionID;
@@ -16,7 +18,10 @@ use std::{
 
 pub const ENABLE: &str = "enable-agent-mcp";
 const TOKEN: &str = "agent-mcp-token";
+#[cfg(not(feature = "mcp-isolated"))]
 const ADDRESS: &str = "127.0.0.1:59940";
+#[cfg(feature = "mcp-isolated")]
+const ADDRESS: &str = "127.0.0.1:59941";
 static STARTED: Mutex<bool> = Mutex::new(false);
 static STATE: OnceLock<Mutex<HashMap<SessionID, Arc<SessionState>>>> = OnceLock::new();
 static STATUS: Mutex<String> = Mutex::new(String::new());
@@ -49,6 +54,7 @@ pub fn local_option(key: &str) -> Option<String> {
     match key {
         "agent-mcp-supported" => Some("Y".into()),
         "agent-mcp-status" => Some(STATUS.lock().unwrap().clone()),
+        "agent-mcp-endpoint" => Some(format!("http://{ADDRESS}/mcp")),
         _ => None,
     }
 }

@@ -1,4 +1,6 @@
 mod keyboard;
+#[cfg(all(feature = "mcp-isolated", not(target_os = "macos")))]
+compile_error!("mcp-isolated is supported only on macOS");
 /// cbindgen:ignore
 pub mod platform;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

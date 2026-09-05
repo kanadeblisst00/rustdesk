@@ -30,6 +30,16 @@
 
 `Agent MCP protocol` 是协议测试，不生成桌面安装包；`Full Flutter CI`、`Flutter Nightly Build` 和标签发布工作流沿用上游构建，默认不包含 MCP，不应作为 MCP 产物下载入口。
 
+### 与正在使用的 macOS 版本隔离测试
+
+Actions 手动运行时勾选 `isolated_macos`，或在 Mac 上执行 `python3 build.py --flutter --mcp --mcp-isolated`，会生成独立的 `RustDeskMCPTest.app`。此开关仅支持 macOS，普通 `--mcp` 构建不改变身份。
+
+测试版的 Bundle ID 为 `cn.ikanade.RustDeskMCPTest`，Rust 配置位于 `~/Library/Preferences/cn.ikanade.RustDeskMCPTest`，日志位于 `~/Library/Logs/RustDeskMCPTest`，IPC 使用 `/tmp/RustDeskMCPTest-<uid>/`，URL scheme 为 `rustdeskmcptest`，MCP 地址为 `http://127.0.0.1:59941/mcp`。Flutter 存储也使用独立 Bundle ID，不导入普通 RustDesk 的配置、账户或令牌。打包时执行原生 `--mcp-isolation-info` 检查身份与路径，不允许仅重命名普通安装包冒充隔离版。
+
+测试版只作为控制端：不启动被控端的屏幕采集、输入服务或入站监听；保留自身 GUI 配置同步 IPC 和正常的远端连接能力。系统服务安装、应用替换、管理命令及共用更新目录清理被禁用，不需要退出或覆盖 `/Applications/RustDesk.app`。它不是操作系统沙箱：获得远端授权后，MCP 的文件和终端工具仍有实际读写能力。
+
+将解压后的测试版保留在独立目录，进入「设置 → 通用」启用 MCP（控制端专用版没有「安全」页），使用「复制 MCP 配置」获得真实地址。stdio 代理额外设置 `RUSTDESK_MCP_URL=http://127.0.0.1:59941/mcp`。若 macOS 要求授权，仅为测试版单独授权，不重置现有 RustDesk 权限，不全局关闭系统安全保护。隔离构建不代表真实远端联调已通过；测试不得操作正在使用的原版实例或未授权设备。
+
 ### Streamable HTTP 客户端
 
 将设置页复制的配置合并到支持 HTTP 的 MCP 客户端中。不同客户端的配置外层可能不同：

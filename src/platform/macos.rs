@@ -187,6 +187,9 @@ pub fn install_service() -> bool {
 // No need to merge the existing dup code, because the code in these two functions are too critical.
 // New code should be written in a common function.
 pub fn is_installed_daemon(prompt: bool) -> bool {
+    if cfg!(feature = "mcp-isolated") {
+        return false;
+    }
     let daemon = format!("{}_service.plist", crate::get_full_name());
     let agent = format!("{}_server.plist", crate::get_full_name());
     let agent_plist_file = format!("/Library/LaunchAgents/{}", agent);
@@ -335,6 +338,9 @@ fn write_plist_atomically(path: &str, body: &str) -> ResultType<()> {
 }
 
 pub fn write_plists() -> ResultType<()> {
+    if cfg!(feature = "mcp-isolated") {
+        bail!("System service installation is disabled in RustDeskMCPTest");
+    }
     let daemon_plist_path = format!(
         "/Library/LaunchDaemons/com.carriez.{}_service.plist",
         crate::get_app_name()
@@ -935,6 +941,9 @@ pub fn try_remove_temp_update_dir(dir: Option<&str>) {
 }
 
 pub fn update_me() -> ResultType<()> {
+    if cfg!(feature = "mcp-isolated") {
+        bail!("Application replacement is disabled in RustDeskMCPTest");
+    }
     let is_installed_daemon = is_installed_daemon(false);
     let option_stop_service = "stop-service";
     let is_service_stopped = hbb_common::config::option2bool(
@@ -1005,6 +1014,9 @@ end run
 }
 
 pub fn update_from_dmg(dmg_path: &str) -> ResultType<()> {
+    if cfg!(feature = "mcp-isolated") {
+        bail!("Application replacement is disabled in RustDeskMCPTest");
+    }
     let update_temp_dir = get_update_temp_dir_string();
     println!("Starting update from DMG: {}", dmg_path);
     extract_dmg(dmg_path, &update_temp_dir)?;

@@ -1,9 +1,10 @@
+#[cfg(not(feature = "mcp-isolated"))]
 use librustdesk::*;
 
 #[cfg(not(target_os = "macos"))]
 fn main() {}
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "mcp-isolated")))]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "--write-plists" {
@@ -16,4 +17,10 @@ fn main() {
     crate::common::load_custom_client();
     hbb_common::init_log(false, "service");
     crate::start_os_service();
+}
+
+#[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
+fn main() {
+    eprintln!("System services are disabled in RustDeskMCPTest");
+    std::process::exit(2);
 }

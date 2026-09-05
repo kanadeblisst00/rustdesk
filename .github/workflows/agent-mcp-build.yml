@@ -2,6 +2,11 @@ name: MCP desktop build
 
 on:
   workflow_dispatch:
+    inputs:
+      isolated_macos:
+        description: Build macOS as the separate control-only RustDeskMCPTest app
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -179,6 +184,8 @@ jobs:
         run: |
           "$VCPKG_ROOT/vcpkg" install --triplet "${{ matrix.triplet }}" --x-install-root="$VCPKG_ROOT/installed"
       - name: Build MCP desktop application
+        env:
+          ISOLATED_MACOS: ${{ inputs.isolated_macos }}
         run: |
           args=(--flutter --mcp --hwcodec)
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -188,6 +195,9 @@ jobs:
           fi
           if [ "${{ matrix.platform }}" = "macos-arm64" ]; then
             args+=(--screencapturekit)
+          fi
+          if [ "$RUNNER_OS" = "macOS" ] && [ "$ISOLATED_MACOS" = "true" ]; then
+            args+=(--mcp-isolated)
           fi
           python build.py "${args[@]}" --print-features
           python build.py "${args[@]}"
@@ -211,8 +221,13 @@ jobs:
           cp rustdesk-*.deb dist/
       - name: Package macOS application with symlinks preserved
         if: runner.os == 'macOS'
+        env:
+          ISOLATED_MACOS: ${{ inputs.isolated_macos }}
         run: |
           app=flutter/build/macos/Build/Products/Release/RustDesk.app
+          if [ "$ISOLATED_MACOS" = "true" ]; then
+            app=flutter/build/macos/Build/Products/Release/RustDeskMCPTest.app
+          fi
           test -s "$app/Contents/MacOS/RustDesk"
           test -s "$app/Contents/MacOS/service"
           test -s "$app/Contents/Frameworks/liblibrustdesk.dylib"

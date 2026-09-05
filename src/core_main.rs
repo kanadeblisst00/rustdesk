@@ -33,6 +33,10 @@ pub fn core_main() -> Option<Vec<String>> {
         return None;
     }
     crate::load_custom_client();
+    #[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
+    if !crate::agent_mcp::isolated::allow_launch() {
+        return None;
+    }
     #[cfg(windows)]
     if !crate::platform::windows::bootstrap() {
         // return None to terminate the process
@@ -79,6 +83,8 @@ pub fn core_main() -> Option<Vec<String>> {
         }
         i += 1;
     }
+    #[cfg(feature = "mcp-isolated")]
+    let _ = no_server;
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if args.is_empty() {
         #[cfg(target_os = "linux")]
@@ -191,7 +197,7 @@ pub fn core_main() -> Option<Vec<String>> {
         return None;
     }
     if args.is_empty() || crate::common::is_empty_uni_link(&args[0]) {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(feature = "mcp-isolated")))]
         {
             crate::platform::macos::try_remove_temp_update_dir(None);
         }
@@ -201,7 +207,10 @@ pub fn core_main() -> Option<Vec<String>> {
             crate::platform::try_remove_temp_update_files();
             hbb_common::config::PeerConfig::preload_peers();
         }
+        #[cfg(not(feature = "mcp-isolated"))]
         std::thread::spawn(move || crate::start_server(false, no_server));
+        #[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
+        crate::agent_mcp::isolated::start_control_ipc();
     } else {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         // Root CLI management commands must talk to the user `--server` main IPC.

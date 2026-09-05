@@ -120,6 +120,8 @@ def make_parser():
                         help='Build flutter package', default=False)
     parser.add_argument('--mcp', action='store_true',
                         help='Include the opt-in desktop agent MCP server (requires --flutter)', default=False)
+    parser.add_argument('--mcp-isolated', action='store_true',
+                        help='Build a separate macOS control-only test app (requires --flutter --mcp)', default=False)
     parser.add_argument(
         '--hwcodec',
         action='store_true',
@@ -326,6 +328,12 @@ def get_features(args):
         if not args.flutter:
             raise Exception('--mcp requires --flutter')
         features.append('mcp')
+    if getattr(args, 'mcp_isolated', False):
+        if not osx:
+            raise Exception('--mcp-isolated is macOS only')
+        if not args.flutter or not args.mcp:
+            raise Exception('--mcp-isolated requires --flutter --mcp')
+        features.append('mcp-isolated')
     if args.unix_file_copy_paste:
         features.append('unix-file-copy-paste')
     if args.drm:
@@ -910,9 +918,15 @@ def build_flutter_dmg(version, features):
     # so the universal-by-default ARCHS_STANDARD doesn't try to link a missing slice.
     # FLUTTER_XCODE_* env vars are forwarded to xcodebuild as build settings.
     mac_arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x86_64'
+    isolated_settings = ''
+    if 'mcp-isolated' in features.split(','):
+        isolated_settings = 'FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER=cn.ikanade.RustDeskMCPTest '
     system2(
-        f'FLUTTER_XCODE_ARCHS={mac_arch} FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES flutter build macos --release')
+        f'{isolated_settings}FLUTTER_XCODE_ARCHS={mac_arch} FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES flutter build macos --release')
     system2('cp -rf ../target/release/service ./build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/')
+    if isolated_settings:
+        subprocess.run([sys.executable, os.path.join(REPO_ROOT, 'tools/mcp/package_macos_isolated.py'),
+                        'build/macos/Build/Products/Release/RustDesk.app'], check=True)
     '''
     system2(
         "create-dmg --volname \"RustDesk Installer\" --window-pos 200 120 --window-size 800 400 --icon-size 100 --app-drop-link 600 185 --icon RustDesk.app 200 190 --hide-extension RustDesk.app rustdesk.dmg ./build/macos/Build/Products/Release/RustDesk.app")
