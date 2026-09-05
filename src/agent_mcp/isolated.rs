@@ -56,6 +56,12 @@ pub fn allow_launch() -> bool {
                 "mcp_endpoint": format!("http://{}/mcp", super::ADDRESS),
                 "outgoing_only": config::is_outgoing_only(),
                 "installation_disabled": config::is_disable_installation(),
+                "built_in_server": {
+                    "id_servers": config::RENDEZVOUS_SERVERS,
+                    "public_key": config::RS_PUB_KEY,
+                    "relay_server": config::DEFAULT_SETTINGS.read().unwrap()
+                        .get("relay-server").cloned().unwrap_or_default(),
+                },
             })
         );
         return false;
