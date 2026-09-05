@@ -94,6 +94,11 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        env:
+          # Preserve patch and submodule source line endings, including on Windows.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
         with:
           submodules: recursive
           persist-credentials: false
