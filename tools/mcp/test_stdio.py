@@ -57,16 +57,21 @@ class ProxyTest(unittest.TestCase):
                 {"jsonrpc": "2.0", "method": "notifications/initialized"},
                 {"jsonrpc": "2.0", "id": "中文", "method": "ping"},
             ]
-            output = subprocess.run([sys.executable, str(SCRIPT), "--url", "http://127.0.0.1:%d/mcp" % server.server_port],
-                                    input="\n".join(json.dumps(m) for m in messages) + "\n", text=True,
-                                    capture_output=True, env={**os.environ, "RUSTDESK_MCP_TOKEN": TOKEN}, timeout=10)
-            self.assertEqual(output.returncode, 0, output.stderr)
-            replies = [json.loads(line) for line in output.stdout.splitlines()]
-            self.assertEqual([r["id"] for r in replies], [0, "中文"])
-            self.assertEqual(len(Handler.seen), 3)
-            self.assertTrue(all(r[1] == "Bearer " + TOKEN for r in Handler.seen))
-            self.assertEqual(Handler.seen[-1][2], "2025-11-25")
-            self.assertNotIn(TOKEN, output.stdout + output.stderr)
+            for encoding in ("utf-8", "cp1252", "ascii"):
+                with self.subTest(encoding=encoding):
+                    Handler.seen = []
+                    output = subprocess.run(
+                        [sys.executable, str(SCRIPT), "--url", "http://127.0.0.1:%d/mcp" % server.server_port],
+                        input="\n".join(json.dumps(m, ensure_ascii=False) for m in messages) + "\n",
+                        encoding="utf-8", capture_output=True,
+                        env={**os.environ, "RUSTDESK_MCP_TOKEN": TOKEN, "PYTHONIOENCODING": encoding}, timeout=10)
+                    self.assertEqual(output.returncode, 0, output.stderr)
+                    replies = [json.loads(line) for line in output.stdout.splitlines()]
+                    self.assertEqual([r["id"] for r in replies], [0, "中文"])
+                    self.assertEqual(len(Handler.seen), 3)
+                    self.assertTrue(all(r[1] == "Bearer " + TOKEN for r in Handler.seen))
+                    self.assertEqual(Handler.seen[-1][2], "2025-11-25")
+                    self.assertNotIn(TOKEN, output.stdout + output.stderr)
         finally:
             server.shutdown()
             server.server_close()

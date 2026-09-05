@@ -64,8 +64,9 @@ class Proxy:
 
 
 def emit(message):
-    sys.stdout.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n"
+    sys.stdout.buffer.write(payload.encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def main():
