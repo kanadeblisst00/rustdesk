@@ -38,6 +38,8 @@ RustDesk welcomes contribution from everyone. See [CONTRIBUTING.md](docs/CONTRIB
 
 ## Dependencies
 
+Optional desktop agent integration: [Agent MCP setup, tools and security](docs/agent-mcp.md).
+
 Desktop versions use Flutter or Sciter (deprecated) for GUI. This tutorial is for Sciter only, since it is easier and more friendly to start. Check out our [CI](https://github.com/rustdesk/rustdesk/blob/master/.github/workflows/flutter-build.yml) for building the Flutter version.
 
 Please download Sciter dynamic library yourself.

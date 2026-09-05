@@ -770,5 +770,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("port-forward-mux-tip", "Visi vieno prievadų peradresavimo ryšiai eina per vieną ryšį su kitu kompiuteriu, užuot kiekvienam iš jų jungiantis ir prisijungiant iš naujo."),
         ("Enable WebRTC P2P connection", "Įgalinti WebRTC P2P ryšį"),
         ("Enable TCP hole punching", "Įgalinti TCP gręžimą (hole punching)"),
+        ("Enable MCP server", ""),
+        ("MCP device allowlist", ""),
+        ("Copy MCP configuration", ""),
+        ("agent-mcp-tip", ""),
     ].iter().cloned().collect();
 }

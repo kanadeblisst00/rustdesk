@@ -770,5 +770,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("port-forward-mux-tip", "同一条端口转发规则上的所有连接共用一条到对方的连接，而不是每条连接都重新连接并登录一次。"),
         ("Enable WebRTC P2P connection", "启用 WebRTC P2P 连接"),
         ("Enable TCP hole punching", "启用 TCP 打洞"),
+        ("Enable MCP server", "启用 MCP 服务"),
+        ("MCP device allowlist", "MCP 设备白名单"),
+        ("Copy MCP configuration", "复制 MCP 配置"),
+        ("agent-mcp-tip", "允许本机 Agent 控制已授权的远程设备。服务仅监听本机地址并需要令牌；白名单填写逗号分隔的设备 ID，留空表示全部设备。关闭服务可停止新的 MCP 操作。"),
     ].iter().cloned().collect();
 }

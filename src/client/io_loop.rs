@@ -1470,6 +1470,8 @@ impl<T: InvokeUiSession> Remote<T> {
                         !lc.disable_clipboard.v && !lc.view_only.v
                     };
                     if clipboard_allowed {
+                        #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+                        crate::agent_mcp::clipboard(&self.handler.get_id(), &cb);
                         #[cfg(all(
                             feature = "flutter",
                             not(any(target_os = "android", target_os = "ios"))
@@ -1505,6 +1507,10 @@ impl<T: InvokeUiSession> Remote<T> {
                         !lc.disable_clipboard.v && !lc.view_only.v
                     };
                     if clipboard_allowed {
+                        #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+                        for clipboard in &_mcb.clipboards {
+                            crate::agent_mcp::clipboard(&self.handler.get_id(), clipboard);
+                        }
                         #[cfg(all(
                             feature = "flutter",
                             not(any(target_os = "android", target_os = "ios"))
@@ -2118,6 +2124,10 @@ impl<T: InvokeUiSession> Remote<T> {
                     self.handler.set_platform_additions(&pi.platform_additions);
                 }
                 Some(message::Union::ScreenshotResponse(response)) => {
+                    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+                    if crate::agent_mcp::screenshot_response(&self.handler.get_id(), &response) {
+                        return true;
+                    }
                     crate::client::screenshot::set_screenshot(response.data);
                     self.handler
                         .handle_screenshot_resp(response.sid, response.msg);

@@ -26,6 +26,7 @@ use_samplerate = ["samplerate"]
 use_rubato = ["rubato"]
 use_dasp = ["dasp"]
 flutter = ["flutter_rust_bridge"]
+mcp = ["flutter", "dep:rustdesk-agent-mcp"]
 default = ["use_dasp"]
 hwcodec = ["scrap/hwcodec"]
 vram = ["scrap/vram"]
@@ -165,6 +166,7 @@ piet-coregraphics = "0.6"
 foreign-types = "0.3"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+rustdesk-agent-mcp = { path = "libs/agent_mcp", optional = true }
 tray-icon = { git = "https://github.com/tauri-apps/tray-icon", version = "0.21.3" }
 tao = { git = "https://github.com/rustdesk-org/tao", branch = "dev" }
 image = "0.24"
@@ -209,7 +211,7 @@ android-wakelock = { git = "https://github.com/rustdesk-org/android-wakelock" }
 
 [workspace]
 members = ["libs/scrap", "libs/hbb_common", "libs/enigo", "libs/clipboard", "libs/virtual_display", "libs/virtual_display/dylib", "libs/portable", "libs/remote_printer"]
-exclude = ["vdi/host"]
+exclude = ["vdi/host", "libs/agent_mcp"]
 
 # Patch libxdo-sys to use a stub implementation that doesn't require libxdo
 # This allows building and running on systems without libxdo installed (e.g., Wayland-only)

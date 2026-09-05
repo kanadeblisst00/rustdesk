@@ -1,0 +1,41 @@
+name: Agent MCP protocol
+
+on:
+  push:
+    paths: ['libs/agent_mcp/**', 'src/agent_mcp/**', 'tools/mcp/**', 'build.py', '.github/workflows/agent-mcp.yml']
+  pull_request:
+    paths: ['libs/agent_mcp/**', 'src/agent_mcp/**', 'tools/mcp/**', 'build.py', '.github/workflows/agent-mcp.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable]
+        include:
+          - os: ubuntu-latest
+            rust: '1.75.0'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+      - run: cargo fmt --manifest-path libs/agent_mcp/Cargo.toml --check
+        if: matrix.rust == 'stable'
+      - run: cargo test --locked --manifest-path libs/agent_mcp/Cargo.toml
+      - run: cargo clippy --locked --manifest-path libs/agent_mcp/Cargo.toml --all-targets -- -D warnings
+        if: matrix.rust == 'stable'
+      - run: python -m unittest discover -s tools/mcp -p "test_*.py" -v
+      - name: Official SDK interoperability
+        if: runner.os == 'Linux' && matrix.rust == 'stable'
+        run: |
+          python -m venv /tmp/mcp-sdk-test
+          /tmp/mcp-sdk-test/bin/pip install mcp==1.28.1
+          cargo build --locked --manifest-path libs/agent_mcp/Cargo.toml --example transport_fixture
+          /tmp/mcp-sdk-test/bin/python tools/mcp/sdk_interop.py libs/agent_mcp/target/debug/examples/transport_fixture

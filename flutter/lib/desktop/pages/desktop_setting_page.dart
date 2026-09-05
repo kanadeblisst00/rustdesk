@@ -12,6 +12,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
+import 'package:flutter_hbb/desktop/widgets/agent_mcp_settings.dart';
 import 'package:flutter_hbb/mobile/widgets/dialog.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/printer_model.dart';
@@ -928,6 +929,8 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                 if (!isChangeIdDisabled())
                   _Card(title: 'ID', children: [changeId()]),
                 more(context),
+                if (bind.mainGetLocalOption(key: 'agent-mcp-supported') == 'Y')
+                  const AgentMcpSettings(),
               ]),
             ),
           ],

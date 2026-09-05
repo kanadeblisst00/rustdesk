@@ -536,6 +536,11 @@ impl SessionHandler {
 }
 
 impl FlutterHandler {
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    pub(crate) fn agent_session_ids(&self) -> Vec<SessionID> {
+        self.session_handlers.read().unwrap().keys().copied().collect()
+    }
+
     /// Push an event to all the event queues.
     /// An event is stored as json in the event queues.
     ///
@@ -583,6 +588,8 @@ impl FlutterHandler {
                 }
             }
             if push {
+                #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+                crate::agent_mcp::event(*sid, name, &h);
                 if let Some(stream) = &session.event_stream {
                     stream.add(EventToUI::Event(out.clone()));
                 }
@@ -840,6 +847,8 @@ impl InvokeUiSession for FlutterHandler {
     #[inline]
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn on_rgba(&self, display: usize, rgba: &mut scrap::ImageRgb) {
+        #[cfg(feature = "mcp")]
+        crate::agent_mcp::frame(|| self.agent_session_ids(), display, rgba);
         let use_texture_render = self.use_texture_render.load(Ordering::Relaxed);
         self.on_rgba_flutter_texture_render(use_texture_render, display, rgba);
         if !use_texture_render {
@@ -1819,6 +1828,10 @@ pub fn get_global_event_channels() -> Vec<String> {
 }
 
 pub fn start_global_event_stream(s: StreamSink<String>, app_type: String) -> ResultType<()> {
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    if app_type.split(',').next() == Some("main") {
+        crate::agent_mcp::start();
+    }
     let app_type_values = app_type.split(",").collect::<Vec<&str>>();
     let mut lock = GLOBAL_EVENT_STREAM.write().unwrap();
     if !lock.contains_key(app_type_values[0]) {

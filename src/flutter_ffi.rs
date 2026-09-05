@@ -1169,6 +1169,10 @@ pub fn main_http_request(url: String, method: String, body: Option<String>, head
 }
 
 pub fn main_get_local_option(key: String) -> SyncReturn<String> {
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    if let Some(value) = crate::agent_mcp::local_option(&key) {
+        return SyncReturn(value);
+    }
     SyncReturn(get_local_option(key))
 }
 

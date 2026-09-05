@@ -2682,6 +2682,11 @@ impl Deref for LoginConfigHandler {
 }
 
 impl LoginConfigHandler {
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    pub(crate) fn agent_has_login_challenge(&self) -> bool {
+        !self.hash.challenge.is_empty()
+    }
+
     pub(crate) fn set_hash(&mut self, hash: Hash) {
         self.hash = hash;
     }

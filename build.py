@@ -118,6 +118,8 @@ def make_parser():
              'Available: [Not used for now]. Special value is "ALL" and empty "". Default is empty.')
     parser.add_argument('--flutter', action='store_true',
                         help='Build flutter package', default=False)
+    parser.add_argument('--mcp', action='store_true',
+                        help='Include the opt-in desktop agent MCP server (requires --flutter)', default=False)
     parser.add_argument(
         '--hwcodec',
         action='store_true',
@@ -320,6 +322,10 @@ def get_features(args):
         features.append('vram')
     if args.flutter:
         features.append('flutter')
+    if args.mcp:
+        if not args.flutter:
+            raise Exception('--mcp requires --flutter')
+        features.append('mcp')
     if args.unix_file_copy_paste:
         features.append('unix-file-copy-paste')
     if args.drm:
