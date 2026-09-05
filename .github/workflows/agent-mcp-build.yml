@@ -1,0 +1,230 @@
+name: MCP desktop build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.24.5"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  CARGO_BUILD_JOBS: "3"
+
+jobs:
+  bridge:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Install bridge prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev libgtk-3-dev llvm-dev ninja-build pkg-config
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "1.75"
+          components: rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: mcp-bridge
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: "3.22.3"
+      - name: Generate the desktop bridge
+        run: |
+          cargo install cargo-expand --version 1.0.95 --locked
+          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid --locked
+          # Keep the same generator SDK and dependency resolution as bridge.yml.
+          sed -i 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          (cd flutter && flutter pub get)
+          flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcp-bridge
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            src/bridge_generated.rs
+            src/bridge_generated.io.rs
+            flutter/lib/generated_bridge.dart
+            flutter/lib/generated_bridge.freezed.dart
+            flutter/macos/Runner/bridge_generated.h
+
+  desktop:
+    name: MCP ${{ matrix.platform }}
+    needs: bridge
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-2022
+            rust: "1.75"
+            target: x86_64-pc-windows-msvc
+            triplet: x64-windows-static
+          - platform: linux-x64
+            os: ubuntu-22.04
+            rust: "1.75"
+            target: x86_64-unknown-linux-gnu
+            triplet: x64-linux
+          - platform: macos-x64
+            os: macos-15-intel
+            rust: "1.81"
+            target: x86_64-apple-darwin
+            triplet: x64-osx
+          - platform: macos-arm64
+            os: macos-14
+            rust: "1.81"
+            target: aarch64-apple-darwin
+            triplet: arm64-osx
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mcp-bridge
+          path: ./
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install CMake for vcpkg
+        run: python -m pip install cmake==4.3.0
+      - name: Install Linux prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang libclang-dev llvm-dev nasm ninja-build \
+            pkg-config libayatana-appindicator3-dev libasound2-dev libgtk-3-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libpulse-dev libva-dev \
+            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev libssl-dev
+      - name: Install macOS prerequisites
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm
+          if ! command -v pkg-config; then brew install pkg-config; fi
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+          curl --fail --location --retry 3 https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip -o "$RUNNER_TEMP/nasm.zip"
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP/mcp-nasm"
+          echo "$RUNNER_TEMP/mcp-nasm/nasm-2.16.03" >> "$GITHUB_PATH"
+      - name: Install Windows LLVM
+        if: runner.os == 'Windows'
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: "15.0.6"
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: mcp-${{ matrix.platform }}
+      - name: Install Windows Flutter
+        if: runner.os == 'Windows'
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+      - name: Install Unix Flutter
+        if: runner.os != 'Windows'
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - name: Patch Flutter dropdown menu
+        run: |
+          flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
+          git -C "$flutter_root" apply "$GITHUB_WORKSPACE/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+      - name: Use the upstream Windows Flutter engine
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          flutter precache --windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $flutterRoot = Split-Path (Split-Path (Get-Command flutter).Source)
+          Invoke-WebRequest https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile "$env:RUNNER_TEMP/engine.zip"
+          Expand-Archive "$env:RUNNER_TEMP/engine.zip" "$env:RUNNER_TEMP/mcp-engine"
+          Copy-Item "$env:RUNNER_TEMP/mcp-engine/*" "$flutterRoot/bin/cache/artifacts/engine/windows-x64-release/" -Recurse -Force
+      - name: Apply upstream macOS build adjustments
+        if: runner.os == 'macOS'
+        run: |
+          flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
+          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' "$flutter_root/packages/flutter/lib/src/scheduler/binding.dart"
+          if [ "${{ matrix.platform }}" = "macos-arm64" ]; then
+            sed -i -e 's/MACOSX_DEPLOYMENT_TARGET=10.14/MACOSX_DEPLOYMENT_TARGET=12.3/' build.py
+            sed -i -e "s/platform :osx, '.*'/platform :osx, '12.3'/" flutter/macos/Podfile
+            sed -i -e 's/osx_minimum_system_version = "[0-9]*.[0-9]*"/osx_minimum_system_version = "12.3"/' Cargo.toml
+            sed -i -e 's/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = 12.3;/' flutter/macos/Runner.xcodeproj/project.pbxproj
+          fi
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: ${{ runner.temp }}/mcp-vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+      - name: Install native dependencies
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: ${{ matrix.triplet }}
+        run: |
+          "$VCPKG_ROOT/vcpkg" install --triplet "${{ matrix.triplet }}" --x-install-root="$VCPKG_ROOT/installed"
+      - name: Build MCP desktop application
+        run: |
+          args=(--flutter --mcp --hwcodec)
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            args+=(--skip-portable-pack)
+          else
+            args+=(--unix-file-copy-paste)
+          fi
+          if [ "${{ matrix.platform }}" = "macos-arm64" ]; then
+            args+=(--screencapturekit)
+          fi
+          python build.py "${args[@]}" --print-features
+          python build.py "${args[@]}"
+      - name: Package Windows bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bundle = "flutter/build/windows/x64/runner/Release"
+          foreach ($file in @("rustdesk.exe", "librustdesk.dll", "dylib_virtual_display.dll")) {
+            if (!(Test-Path "$bundle/$file")) { throw "Missing application file: $file" }
+          }
+          New-Item -ItemType Directory -Force dist
+          Compress-Archive "$bundle/*" "dist/rustdesk-mcp-windows-x64.zip"
+      - name: Package Linux bundle and Debian package
+        if: runner.os == 'Linux'
+        run: |
+          test -s flutter/build/linux/x64/release/bundle/rustdesk
+          test -s flutter/build/linux/x64/release/bundle/lib/librustdesk.so
+          mkdir -p dist
+          tar -czf dist/rustdesk-mcp-linux-x64.tar.gz -C flutter/build/linux/x64/release bundle
+          cp rustdesk-*.deb dist/
+      - name: Package macOS application with symlinks preserved
+        if: runner.os == 'macOS'
+        run: |
+          app=flutter/build/macos/Build/Products/Release/RustDesk.app
+          test -s "$app/Contents/MacOS/RustDesk"
+          test -s "$app/Contents/MacOS/service"
+          test -s "$app/Contents/Frameworks/liblibrustdesk.dylib"
+          mkdir -p dist
+          ditto -c -k --keepParent "$app" "dist/rustdesk-mcp-${{ matrix.platform }}.app.zip"
+      - name: Include MCP client and instructions
+        run: |
+          cp tools/mcp/stdio.py docs/agent-mcp.md dist/
+          git rev-parse HEAD > dist/COMMIT.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rustdesk-mcp-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

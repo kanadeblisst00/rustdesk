@@ -11,6 +11,25 @@
 
 编译开关默认关闭，运行时默认关闭。仅支持 Windows、macOS、Linux 的 Flutter 控制端；不支持移动端或旧 Sciter 界面。远端不需要 MCP 改造，但具体能力仍取决于远端 RustDesk 版本与授权。
 
+### GitHub Actions 多平台构建
+
+在自己的 fork 中打开 **Actions → MCP desktop build → Run workflow**，选择包含 MCP 改动的分支（通常是 `master`），再点击 **Run workflow**。工作流文件是 `.github/workflows/agent-mcp-build.yml`，只手动触发，不需要签名密钥或仓库写权限，不创建标签或发布 Release。
+
+桥接代码生成后，会在对应系统的 GitHub runner 上构建四种桌面版本，实际编译参数包含 `--flutter --mcp`：
+
+| Artifact | 内容 |
+| --- | --- |
+| `rustdesk-mcp-windows-x64` | Windows x64 应用目录 ZIP；完整解压后运行 `rustdesk.exe` |
+| `rustdesk-mcp-linux-x64` | Ubuntu 22.04 环境构建的 Debian 包和应用目录 TAR.GZ |
+| `rustdesk-mcp-macos-x64` | Intel Mac 的 `.app.zip` |
+| `rustdesk-mcp-macos-arm64` | Apple Silicon 的 `.app.zip`，最低 macOS 12.3 |
+
+等待目标平台任务成功后，在该次运行的 **Summary → Artifacts** 下载对应包。每份产物同时包含 `stdio.py`、本说明及 `COMMIT.txt`；`mcp-bridge` 只是构建中间文件。产物保留 14 天，可通过再次运行重新构建。
+
+这些是未进行发行签名/公证的测试包，不是正式签名安装器。Windows 包不附带上游发布流程额外下载的虚拟显示器和打印机驱动，也未启用 `vram`。Linux 运行仍需要系统图形/音频等依赖，不保证兼容比 Ubuntu 22.04 更老的发行版。macOS 首次打开可能需要按系统提示允许该应用；不要全局关闭系统安全保护。安装后仍需手动启用 MCP 服务并配置授权。
+
+`Agent MCP protocol` 是协议测试，不生成桌面安装包；`Full Flutter CI`、`Flutter Nightly Build` 和标签发布工作流沿用上游构建，默认不包含 MCP，不应作为 MCP 产物下载入口。
+
 ### Streamable HTTP 客户端
 
 将设置页复制的配置合并到支持 HTTP 的 MCP 客户端中。不同客户端的配置外层可能不同：
