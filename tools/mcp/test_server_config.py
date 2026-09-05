@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,6 +12,47 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ServerConfigTest(unittest.TestCase):
+    def test_crlf_checkout_is_normalized_before_applying_patch(self):
+        original = subprocess.check_output(
+            ["git", "-C", str(ROOT / "libs/hbb_common"), "show", "HEAD:src/config.rs"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "repository"
+            source = repository / "src/config.rs"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(original)
+            patch = repository / "server.diff"
+            patch.write_bytes((ROOT / ".github/patches/agent-mcp-server.diff").read_bytes())
+            subprocess.run(["git", "init", "-q", str(repository)], check=True)
+            files = ["src/config.rs", "server.diff"]
+            subprocess.run(["git", "-c", "core.autocrlf=false", "add", "--", *files],
+                           cwd=repository, check=True)
+            for mode in ["true", "false"]:
+                output = root / mode
+                subprocess.run(["git", "checkout-index", "--prefix=" + str(output) + "/",
+                                "--", *files], cwd=repository, check=True, env={
+                                    **os.environ,
+                                    "GIT_CONFIG_COUNT": "1",
+                                    "GIT_CONFIG_KEY_0": "core.autocrlf",
+                                    "GIT_CONFIG_VALUE_0": mode,
+                                })
+                patch = output / "server.diff"
+                source = output / "src/config.rs"
+                result = subprocess.run(["git", "apply", "--check", str(patch)],
+                                        cwd=output, capture_output=True)
+                if mode == "true":
+                    self.assertIn(b"\r\n", patch.read_bytes())
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b"corrupt patch", result.stderr)
+                    self.assertIn(b"18", result.stderr)
+                else:
+                    self.assertNotIn(b"\r\n", patch.read_bytes())
+                    self.assertNotIn(b"\r\n", source.read_bytes())
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    subprocess.run(["git", "apply", str(patch)], cwd=output, check=True)
+                    expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
+                    verify(source_config(source.read_text()), expected)
+
     def test_patch_applies_to_pinned_submodule_and_matches_manifest(self):
         original = subprocess.check_output(
             ["git", "-C", str(ROOT / "libs/hbb_common"), "show", "HEAD:src/config.rs"])
