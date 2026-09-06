@@ -61,6 +61,20 @@ jobs:
             flutter/lib/generated_bridge.dart
             flutter/lib/generated_bridge.freezed.dart
             flutter/macos/Runner/bridge_generated.h
+      - name: Package MCP toolkit
+        run: |
+          mkdir rustdesk-mcp-toolkit
+          cp tools/mcp/stdio.py tools/mcp/ocr-requirements.txt rustdesk-mcp-toolkit/
+          cp tools/mcp/server-config.json rustdesk-mcp-toolkit/SERVER-CONFIG.json
+          cp docs/agent-mcp.md rustdesk-mcp-toolkit/README.md
+          git rev-parse HEAD > rustdesk-mcp-toolkit/COMMIT.txt
+          python3 -m zipfile -c rustdesk-mcp-toolkit.zip rustdesk-mcp-toolkit
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: rustdesk-mcp-toolkit.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
 
   desktop:
     name: MCP ${{ matrix.platform }}
@@ -245,7 +259,7 @@ jobs:
         run: |
           args=(--flutter --mcp --hwcodec)
           if [ "$RUNNER_OS" = "Windows" ]; then
-            args+=(--skip-portable-pack)
+            args+=(--portable)
           else
             args+=(--unix-file-copy-paste)
           fi
@@ -274,16 +288,16 @@ jobs:
           grep -Fq "flutter-elinux build linux --verbose" build.py
           grep -Fq "build/linux/arm64/release/bundle/" build.py
           python build.py "${args[@]}" --skip-cargo
-      - name: Package Windows bundle
+      - name: Package Windows self-extracting executable
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $bundle = "flutter/build/windows/x64/runner/Release"
-          foreach ($file in @("rustdesk.exe", "librustdesk.dll", "dylib_virtual_display.dll")) {
-            if (!(Test-Path "$bundle/$file")) { throw "Missing application file: $file" }
+          $portable = @(Get-ChildItem -Path . -Filter "rustdesk-*-install.exe" -File)
+          if ($portable.Count -ne 1) {
+            throw "Expected one RustDesk self-extracting executable, found $($portable.Count)"
           }
           New-Item -ItemType Directory -Force dist
-          Compress-Archive "$bundle/*" "dist/rustdesk-mcp-windows-x64.zip"
+          Move-Item $portable[0].FullName "dist/rustdesk-mcp-windows-x64.exe"
       - name: Package Linux bundle and Debian package
         if: matrix.platform == 'linux-x64'
         run: |
@@ -316,12 +330,15 @@ jobs:
           test -s "$app/Contents/Frameworks/liblibrustdesk.dylib"
           mkdir -p dist
           ditto -c -k --keepParent "$app" "dist/rustdesk-mcp-${{ matrix.platform }}.app.zip"
-      - name: Include MCP client and instructions
-        run: |
-          cp tools/mcp/stdio.py tools/mcp/ocr-requirements.txt docs/agent-mcp.md dist/
-          cp tools/mcp/server-config.json dist/SERVER-CONFIG.json
-          git rev-parse HEAD > dist/COMMIT.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: runner.os == 'Windows'
+        with:
+          path: dist/rustdesk-mcp-windows-x64.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: runner.os != 'Windows'
         with:
           name: rustdesk-mcp-${{ matrix.platform }}
           path: dist/
