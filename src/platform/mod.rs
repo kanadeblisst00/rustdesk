@@ -7,6 +7,8 @@ pub use windows::*;
 
 #[cfg(windows)]
 pub mod windows;
+#[cfg(all(windows, feature = "mcp"))]
+pub(crate) mod agent_uia;
 
 #[cfg(windows)]
 pub mod win_device;

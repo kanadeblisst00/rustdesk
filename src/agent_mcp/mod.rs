@@ -2,6 +2,10 @@ mod desktop;
 #[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
 pub(crate) mod isolated;
 mod session;
+mod automation;
+pub(crate) mod remote;
+mod wire;
+pub(crate) use automation::response as automation_response;
 
 use crate::flutter_ffi::SessionID;
 use hbb_common::{config::LocalConfig, log, tokio};
@@ -39,6 +43,7 @@ pub(super) struct SessionState {
     jobs: Mutex<HashSet<i32>>,
     overwrites: Mutex<HashMap<(i32, i32), bool>>,
     directory: Mutex<Option<Value>>,
+    automation: automation::State,
     headless: bool,
 }
 
@@ -147,7 +152,9 @@ impl Backend for DesktopBackend {
             return Ok(success(
                 json!({"transport":["streamable-http","stdio-proxy"],
                 "desktop":true,"terminal":true,"files":true,"headless":true,
-                "clipboard":"remote received text","ocr":false,"accessibility_tree":false,
+                "clipboard":"remote received text","ocr":automation::ocr_capability()["configured"],
+                "ocr_details":automation::ocr_capability(),"accessibility_tree":true,
+                "uia_details":{"provider":"Windows UI Automation","scope":"foreground_window","requires_upgraded_peer":true},
                 "camera":false,"host_skills":false,"max_sessions":16,"max_events":256,
                 "max_terminal_bytes":1048576,"max_frame_bytes":67108864,
                 "device_allowlist":LocalConfig::get_option("agent-mcp-devices"),
@@ -200,6 +207,9 @@ impl Backend for DesktopBackend {
             .try_lock()
             .map_err(|_| "Another action is in progress on this session")?;
         ensure_enabled()?;
+        if rustdesk_agent_mcp::automation::is_tool(name) {
+            return automation::call(id, &s, &state, name, args);
+        }
         if name == "execute_actions" {
             let actions = args
                 .get("actions")
@@ -322,6 +332,7 @@ pub fn event(id: SessionID, name: &str, data: &impl serde::Serialize) {
         state.terminals.lock().unwrap().clear();
         state.jobs.lock().unwrap().clear();
         state.overwrites.lock().unwrap().clear();
+        state.automation.reset();
     }
     let data = match serde_json::to_value(data) {
         Ok(data) => data,

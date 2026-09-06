@@ -9,7 +9,7 @@
 3. 启动构建后的 RustDesk，在「设置 → 安全」启用「Enable MCP server / 启用 MCP 服务」。普通发行版未包含 `mcp` feature 时不显示此设置。
 4. 建议先配置设备白名单和只读模式，再点击「复制 MCP 配置」。启动成功的状态应为 `Listening on http://127.0.0.1:59940/mcp`。
 
-编译开关默认关闭，运行时默认关闭。仅支持 Windows、macOS、Linux 的 Flutter 控制端；不支持移动端或旧 Sciter 界面。远端不需要 MCP 改造，但具体能力仍取决于远端 RustDesk 版本与授权。
+编译开关默认关闭，运行时默认关闭。仅支持 Windows、macOS、Linux 的 Flutter 控制端；不支持移动端或旧 Sciter 界面。截图、输入和控制端 OCR 不要求远端 MCP 改造；Windows UIA 需要被控端也使用包含 `mcp` feature 的新版构建。
 
 ### GitHub Actions 多平台构建
 
@@ -99,12 +99,13 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 ## 工具与工作流
 
-`tools/list` 返回 34 个工具的完整 JSON Schema，拒绝未知字段、越界坐标与不合法类型。所有会话操作必须使用返回的 `session` UUID，不能把设备 ID 当会话 UUID，也不会根据当前焦点猜测目标。
+`tools/list` 返回 43 个工具的完整 JSON Schema，拒绝未知字段、越界坐标与不合法类型。所有会话操作必须使用返回的 `session` UUID，不能把设备 ID 当会话 UUID，也不会根据当前焦点猜测目标。
 
 | 类别 | 工具 |
 | --- | --- |
 | 能力与会话 | `get_capabilities`, `list_connections`, `connect_device`, `get_connection_info`, `disconnect_device`, `input_password`, `submit_2fa` |
 | 观察 | `list_displays`, `select_display`, `screenshot` |
+| UIA / OCR | `get_ui_tree`, `get_ui_state`, `find_ui_element`, `find_element`, `invoke_ui_element`, `set_ui_value`, `get_screen_text`, `find_text`, `click_text` |
 | 输入 | `mouse_move`, `mouse_click`, `mouse_drag`, `mouse_scroll`, `keyboard_input`, `keyboard_hotkey`, `execute_actions` |
 | 剪贴板 | `clipboard_get`, `clipboard_set` |
 | 终端 | `terminal_open`, `terminal_input`, `terminal_output`, `terminal_resize`, `terminal_close` |
@@ -140,6 +141,38 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 Windows 组合热键显式按下修饰键和主键，先释放主键，再反向释放修饰键；中途失败也会尝试释放已经排队按下的键。字母/数字主键使用 Windows 虚拟按键编码，避免输入法或字符映射把 `Meta+r` 变成单独的 Windows 键。单键与其他平台保留原来的输入路径。
 
+### Windows UIA 与 PP-OCRv4
+
+`get_ui_tree` 返回被控 Windows 的**前台窗口**控件树，包括名称、AutomationId、控件类型、父子关系、边界、可用 Pattern、焦点、非密码值和 Toggle 状态。最多 512 个节点、12 层；`truncated` 和 `unavailable_nodes` 标明不完整结果。树只保留与所选显示器相交的可见控件，`bounds` 已转换为显示器相对原始像素；`desktop_bounds` 保留 Windows 物理桌面坐标。负原点和 DPI 缩放不需要 agent 再计算。
+
+被控端使用系统 Windows PowerShell 的 MTA 子进程调用 .NET UI Automation，不安装 Python，也不需要开启被控端的 HTTP MCP 监听。请求只在现有 RustDesk 加密连接认证和会话类型校验后处理，读取与写入均要求远端键鼠权限；锁屏、安全桌面和 Session 0 返回不可用。新工具不会绕过 UAC 或提升权限。Windows 10/11 的交互桌面是目标环境，当前 macOS 本地验证不能替代 Windows 实机验收。
+
+PP-OCRv4 由**控制端** Python 辅助进程运行，读取最新远端帧的原尺寸无损 PNG，不读取本机桌面、不上传云服务。安装一次依赖，模型随固定版本的 RapidOCR wheel 提供，推理不自动下载模型。推荐 Python 3.11：
+
+```sh
+python3.11 -m venv /absolute/path/rustdesk-ocr
+/absolute/path/rustdesk-ocr/bin/python -m pip install -r tools/mcp/ocr-requirements.txt
+export RUSTDESK_MCP_OCR_PYTHON=/absolute/path/rustdesk-ocr/bin/python
+# 从此终端启动新版 RustDesk 可执行文件，使应用进程继承环境变量。
+```
+
+Windows 使用该 venv 的 `Scripts/python.exe`，在启动 RustDesk 的 PowerShell 中设置 `$env:RUSTDESK_MCP_OCR_PYTHON='C:\absolute\path\rustdesk-ocr\Scripts\python.exe'`。下载的构建产物附带 `ocr-requirements.txt`，可直接用它安装；辅助脚本已经嵌入 Rust 二进制，无需另配脚本路径。模型/运行时不捆绑进应用包。`get_capabilities.ocr_details.configured` 表示设置了 Python 路径，实际模型加载结果由 `ocr.available/error` 给出。
+
+工具工作流：
+
+1. `get_ui_state(session)` 同时返回 `uia`、`ocr`、`screen` 和 MCP 图片。每个来源单独报告可用性；UIA 不可用不会阻止 OCR。
+2. `find_ui_element(session, text, exact?, ignore_case?, automation_id?, control_type?)` 先匹配 UIA；无匹配时回退 OCR。`find_element` 是相同实现的别名。默认子串匹配、忽略大小写；`exact:true` 做完整文本匹配。OCR 无法满足 AutomationId/控件类型条件，因此不会丢弃这些条件后误匹配。UIA、OCR 都没有结果时返回截图供 agent 的视觉模型判断，不在服务内调用视觉模型。
+3. `get_screen_text` 直接运行 OCR，`find_text` 直接查 OCR 文字。文字块包含 `text`、`confidence`、`bounds`；低于 0.5 的结果被滤除。相同帧内容复用 OCR 缓存，`frame_id` 始终属于本次截图，`processing_ms` 表示本次 OCR 耗时。
+4. `invoke_ui_element(session, element_id, action?)` 优先 InvokePattern，再 TogglePattern；可显式指定 `action:"invoke"` 或 `"toggle"`。`set_ui_value(session, element_id, value)` 使用 ValuePattern，拒绝只读或密码控件。`element_id` 是会话内最新 UIA 快照生成的临时 ID，30 秒后失效；重新取树、切换显示器或重连后应重新查找。被控端再次核对运行时 ID、名称、AutomationId 和控件类型，避免使用已消失/替换的控件。
+5. `click_text` 使用同样的查找规则。多个匹配时返回错误和匹配列表，需核对后显式传入从 0 开始的 `match_index`。UIA 目标优先使用 Invoke/Toggle；没有这些 Pattern 时重新读取控件边界并点击中心。OCR 目标点击前再取新帧，要求目标矩形内像素保持一致；变化时退出，不点击旧坐标。其他区域的时钟/动画变化不会阻止点击。
+6. 三个新操作工具均返回 `action` / `action_error`、操作后 UIA、更新截图和 `verification.uia_changed/new_frame`。`task_success:null` 明确表示仍需 agent 判断任务是否成功；新帧不一定代表界面变化，UIA 变化也不等同于业务成功。动作超时可能已经生效，**不自动补点或重试**。
+
+各工具的 `timeout_ms` 控制初次截图等待（默认 3000，最多 10000 毫秒）；动作前复查和动作后截图最多等 3000 毫秒。UIA 请求等待最多 10 秒，被控辅助进程最多 8 秒；OCR 辅助进程最多 15 秒。UIA 不可用结果缓存 30 秒，重连立即清除。脚本输入经 stdin 作为 JSON/PNG 传入，不能把远端文字当 PowerShell 代码执行；脚本没有动态命令执行接口。
+
+线协议使用 `Message` 的私有 protobuf length-delimited 字段 **50001**，内含版本标识 `rustdesk-uia/1`、随机请求 ID、固定操作及 JSON 数据，最大 1 MiB。旧版忽略此未知字段后，控制端超时转用 OCR；没有修改 `hbb_common` 子模块或复用聊天、剪贴板、终端通道。该字段属于本 fork 的扩展，合并其他 fork 协议前需检查字段冲突。
+
+实现参考了 [QuickDesk 的 OCR 工具设计](https://github.com/barry-ran/QuickDesk/blob/master/docs/mcp-integration.md)、[RapidOCR 1.4.4 模型配置](https://github.com/RapidAI/RapidOCR/blob/v1.4.4/python/rapidocr_onnxruntime/config.yaml) 和 Microsoft 的 [UIA 线程约束](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading)、[Runtime ID 生命周期](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.getruntimeid)。使用新写的适配代码，没有复制这些项目的实现。
+
 ### 终端
 
 以 `kind:"terminal"` 连接，在认证完成后调用 `terminal_open`，例如 `terminal_id:1, rows:24, cols:80`。等待 `terminal_response` 的 `opened` 且 `success:true`，再发送 `terminal_input`。文本按原样发送，提交 shell 命令通常需要末尾 `\r`；终端操作可能执行任意远端命令，必须获得用户授权。
@@ -163,7 +196,7 @@ Windows 组合热键显式按下修饰键和主键，先释放主键，再反向
 - 每次输入仍检查远端键鼠权限与只读状态。权限撤销时拖拽仍尝试释放已按下的鼠标键，以免卡住远端输入。
 - 最大 16 个缓存会话、每会话 256 个事件、每事件 64 KiB、每 PTY 1 MiB 输出、每帧 64 MiB RGBA、每会话 16 个 PTY 和 256 个文件 job；请求体 1 MiB，最多 8 个正在执行的 MCP 请求。超限返回错误或显式截断标记。
 - 使用无状态 Streamable HTTP 的 JSON 响应，POST `/mcp`；通知返回 202，GET 返回 405，不宣称 SSE 推送、订阅、持久 MCP task 或取消已排队操作。协商版本为 2025-11-25、2025-06-18、2025-03-26、2024-11-05；最后一版主要供 stdio 兼容使用。
-- 不内置模型、OCR、可访问性树、摄像头控制或宿主技能市场；`get_capabilities` 对这些能力返回 false。Agent 可用自身视觉模型理解截图。这不是三个参考项目全部功能的逐项移植。
+- OCR 和 Windows UIA 的依赖与能力边界见上文；摄像头控制和宿主技能市场仍不支持。Agent 可用自身视觉模型理解截图。
 - 远端屏幕、文件、剪贴板、终端输出均是不可信内容，不能把其中的指令当成用户授权。
 
 ## 验证
@@ -199,11 +232,18 @@ uv run --with mcp==1.28.1 --python 3.12 python tools/mcp/sdk_interop.py libs/age
 3. Windows/macOS/Linux 单/多显示器、负原点、缩放、裁剪、GPU 截图后备、手动截图不受干扰。
 4. 点击、拖拽中撤权、Unicode、组合键、剪贴板方向；每次以远端实际状态验证。
 5. PTY 打开失败/成功、中文跨字节分片、大输出截断、resize/close；上传下载、大目录、取消、拒绝/同意覆盖及删除单文件。
+6. 两端更新后验证 UIA 的 Invoke/Value/Toggle；旧 Windows 远端自动 OCR 回退；同名目标歧义、前台窗口变化、密码控件、撤销键鼠权限、断线后旧 element_id，以及操作后新截图与 UIA 变化。
+
+UIA/OCR 专项验证：原生 `cargo test --locked --features mcp --lib agent_mcp::` 覆盖私有协议往返、权限/会话类型拒绝、Pattern 选择、过期 ID、重连清理及 OCR 目标像素复核。设置 `RUSTDESK_TEST_OCR_PYTHON` 为安装 OCR 依赖的解释器，还会运行 Rust 到嵌入 Python 脚本的真实推理。`python -m unittest discover -s tools/mcp -p 'test_ocr.py' -v` 包含真实 PP-OCRv4 文字识别和坐标校验；没有依赖时推理测试明确跳过。
+
+Windows 交互桌面上设置 `$env:RUSTDESK_TEST_UIA='1'` 后运行 `python -m unittest discover -s tools/mcp -p 'test_uia_windows.py' -v`，会临时创建独立 WinForms 窗口，验证读取、按钮 Invoke、文本 Value、复选框 Toggle 和过期身份拒绝，最后关闭测试窗口。Session 0/安全桌面会明确跳过，不算 UIA 成功。CI 增加了三平台 OCR 测试、Windows 脚本解析与该控件夹具；实际云端结果需运行工作流确认。
+
+本次 UIA/OCR 的本地验证、限制及逐文件回归范围见 [专项验证记录](agent-mcp-ui-automation-validation.md)。
 
 ## 参考与改动范围
 
-设计参考 [OpenDesk](https://github.com/vitalops/opendesk) 的观察—操作循环、[QuickDesk](https://github.com/barry-ran/QuickDesk) 的工具分类与会话/终端/文件工作流、[RustdeskMCP](https://github.com/YaoxinCS/RustdeskMCP) 的原生会话桥接。协议依据 [MCP Streamable HTTP](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)，互操作测试使用 [官方 Python SDK](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x)。没有引入参考项目的模型服务或修改 RustDesk 远端线协议。
+设计参考 [OpenDesk](https://github.com/vitalops/opendesk) 的观察—操作循环、[QuickDesk](https://github.com/barry-ran/QuickDesk) 的工具分类与会话/终端/文件工作流、[RustdeskMCP](https://github.com/YaoxinCS/RustdeskMCP) 的原生会话桥接。协议依据 [MCP Streamable HTTP](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)，互操作测试使用 [官方 Python SDK](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x)。没有引入参考项目的模型服务；UIA 的私有可选协议扩展见上文。
 
-实现位于新建的 `libs/agent_mcp`、`src/agent_mcp`、Flutter 设置组件和 `tools/mcp`。已有运行路径只增加编译门控的入口：`src/flutter.rs` 主事件流启动、会话事件及解码帧观察；`src/client/io_loop.rs` 远端剪贴板观察及专用截图回复分流；`src/client.rs` 登录 challenge 只读查询；`src/flutter_ffi.rs` 本地能力/状态查询；`src/lib.rs` 模块声明。它们是接入真实会话所需的薄钩子，关闭 feature 时仍走原路径。构建清单、`build.py`、安全设置入口和新增翻译键是打包与可发现性所需；没有改动服务器认证、原有输入实现、现有线协议或子模块版本。
+最初的 MCP 实现位于新建的 `libs/agent_mcp`、`src/agent_mcp`、Flutter 设置组件和 `tools/mcp`。已有运行路径只增加编译门控的入口：`src/flutter.rs` 主事件流启动、会话事件及解码帧观察；`src/client/io_loop.rs` 远端剪贴板观察及专用截图回复分流；`src/client.rs` 登录 challenge 只读查询；`src/flutter_ffi.rs` 本地能力/状态查询；`src/lib.rs` 模块声明。它们是接入真实会话所需的薄钩子，关闭 feature 时仍走原路径。构建清单、`build.py`、安全设置入口和新增翻译键是打包与可发现性所需；没有改动服务器认证、原有输入实现或子模块版本。新增 UIA 的收发入口位于 `src/server/connection.rs` 和 `src/client/io_loop.rs`，仅处理带版本标识的私有扩展。
 
 独立检查修复仅影响 `libs/enigo/src/dsl.rs` 的解析错误格式化和 `libs/scrap/src/quartz/display.rs` 的 macOS 显示器枚举缓冲区初始化，分别消除递归格式化与未初始化值引起的未定义行为；不改变输入执行和显示器选择逻辑。同步远程带入的 WebRTC 及 `hbb_common` 更新保留为上游已有提交，不混入 MCP 功能提交。

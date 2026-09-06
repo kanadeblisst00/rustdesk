@@ -50,7 +50,7 @@ impl Frame {
     }
 }
 
-fn display(s: &FlutterSession, state: &SessionState, args: &Map<String, Value>) -> usize {
+pub(super) fn display(s: &FlutterSession, state: &SessionState, args: &Map<String, Value>) -> usize {
     args.get("display")
         .and_then(Value::as_u64)
         .map(|n| n as usize)
@@ -240,7 +240,7 @@ pub(super) fn screenshot(
     Ok(result)
 }
 
-fn input_allowed(s: &FlutterSession) -> Result<(), String> {
+pub(super) fn input_allowed(s: &FlutterSession) -> Result<(), String> {
     writable()?;
     if !session::allowed(s.lc.read().unwrap().get_id()) {
         return Err("Device access revoked".into());
