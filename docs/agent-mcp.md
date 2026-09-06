@@ -123,6 +123,8 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 默认打开普通 RustDesk 窗口。`headless:true` 明确选择无远控窗口的会话，主 RustDesk 仍须运行；认证、连接状态和权限不变。同设备、同类型已有会话会被复用。通过返回的 `connected`、`needs_password` 和事件判断状态，必要时调用 `input_password`、`submit_2fa`，再重新检查连接。超时返回未连接状态不是认证成功。
 
+可见连接由 MCP 监听进程直接向本进程主窗口发送连接事件，避免启动第二个应用实例及其 MCP/IPC 端口争用。主窗口事件通道不可用时立即返回错误，可重新打开主窗口或显式使用 `headless:true`。
+
 桌面工具先截图后操作，再截图确认效果。输入坐标是所选显示器的原始像素坐标；服务端会加上多显示器桌面原点（允许负原点）。截图有裁剪或缩放时：
 
 ```text
@@ -177,6 +179,8 @@ uv run --with mcp==1.28.1 --python 3.12 python tools/mcp/sdk_interop.py libs/age
 自定义 `CARGO_TARGET_DIR` 时相应调整测试可执行文件路径。fixture 不控制真实设备；SDK 测试验证初始化、目录、调用、资源、提示词及两种传输。CI 在三种桌面系统上运行独立测试，**不替代原生桌面构建**。
 
 原生验证：生成完整桥接后运行 `cargo check --locked --features mcp --lib`，并用 `cargo check --locked --features flutter --lib` 检查 feature-off 路径。Flutter 对新增设置页运行静态分析。
+
+可见会话回归：`cargo test --locked --features mcp --lib agent_mcp::session::tests`；macOS 隔离构建改用 `--features mcp-isolated`。覆盖桌面/文件/终端、普通/隔离 URL scheme、中继参数和主窗口不可用时立即失败；这些本地测试不连接真实设备。
 
 默认中继策略回归：运行 `cargo test --locked --features mcp --lib client::relay_policy_tests`。测试在独立子进程中覆盖五种会话类型、显式中继与全局策略的组合，并用 loopback 模拟服务器返回直连地址和中继拒绝，确认不会发起直连或回退直连；不连接真实远端。
 
