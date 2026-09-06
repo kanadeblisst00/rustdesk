@@ -13,6 +13,8 @@ permissions:
 
 env:
   FLUTTER_VERSION: "3.24.5"
+  FLUTTER_ELINUX_VERSION: "3.16.9"
+  FLUTTER_ELINUX_COMMIT_ID: "c02bd16e1630f5bd690b85c5c2456ac1920e25af"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   CARGO_BUILD_JOBS: "3"
 
@@ -44,7 +46,7 @@ jobs:
         run: |
           cargo install cargo-expand --version 1.0.95 --locked
           cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid --locked
-          # Keep the same generator SDK and dependency resolution as bridge.yml.
+          # Keep the generator SDK and dependency resolution aligned with .github/build-versions.yml.
           sed -i 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
           (cd flutter && flutter pub get)
           flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
@@ -79,6 +81,11 @@ jobs:
             rust: "1.75"
             target: x86_64-unknown-linux-gnu
             triplet: x64-linux
+          - platform: linux-arm64
+            os: ubuntu-22.04-arm
+            rust: "1.75"
+            target: aarch64-unknown-linux-gnu
+            triplet: arm64-linux
           - platform: macos-x64
             os: macos-15-intel
             rust: "1.81"
@@ -113,6 +120,17 @@ jobs:
           python-version: "3.12"
       - name: Install CMake for vcpkg
         run: python -m pip install cmake==4.3.0
+      - name: Free disk space for Linux ARM64
+        if: matrix.platform == 'linux-arm64'
+        run: |
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+      - name: Add swap space for Linux ARM64
+        if: matrix.platform == 'linux-arm64'
+        uses: pierotofy/set-swap-space@49819abfb41bd9b44fb781159c033dba90353a7c # v1.0
+        with:
+          swap-size-gb: 12
       - name: Embed and verify private server defaults
         run: |
           git -C libs/hbb_common apply --check "$GITHUB_WORKSPACE/.github/patches/agent-mcp-server.diff"
@@ -125,7 +143,11 @@ jobs:
           sudo apt-get install -y build-essential clang libclang-dev llvm-dev nasm ninja-build \
             pkg-config libayatana-appindicator3-dev libasound2-dev libgtk-3-dev libunwind-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libpulse-dev libva-dev \
-            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev libssl-dev
+            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev \
+            libssl-dev
+      - name: Install Linux ARM64 Flutter prerequisites
+        if: matrix.platform == 'linux-arm64'
+        run: sudo apt-get install -y curl git unzip xz-utils
       - name: Install macOS prerequisites
         if: runner.os == 'macOS'
         run: |
@@ -155,15 +177,36 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
       - name: Install Unix Flutter
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.platform != 'linux-arm64'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+      - name: Install Linux ARM64 Flutter toolchain
+        if: matrix.platform == 'linux-arm64'
+        run: |
+          flutter_archive="$RUNNER_TEMP/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz"
+          curl --fail --location --retry 3 \
+            "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
+            --output "$flutter_archive"
+          tar -xf "$flutter_archive" -C "$RUNNER_TEMP"
+          git clone --depth 1 --branch "$FLUTTER_ELINUX_VERSION" \
+            https://github.com/sony/flutter-elinux.git "$RUNNER_TEMP/mcp-flutter-elinux"
+          test "$(git -C "$RUNNER_TEMP/mcp-flutter-elinux" rev-parse HEAD)" = "$FLUTTER_ELINUX_COMMIT_ID"
+          "$RUNNER_TEMP/mcp-flutter-elinux/bin/flutter-elinux" doctor -v
+          "$RUNNER_TEMP/mcp-flutter-elinux/bin/flutter-elinux" precache --linux
+          mkdir -p "$RUNNER_TEMP/mcp-flutter-elinux/flutter/bin/cache/artifacts/engine/linux-arm64"
+          cp -R "$RUNNER_TEMP/flutter/bin/cache/artifacts/engine/linux-x64/shader_lib" \
+            "$RUNNER_TEMP/mcp-flutter-elinux/flutter/bin/cache/artifacts/engine/linux-arm64/"
+          echo "$RUNNER_TEMP/mcp-flutter-elinux/bin" >> "$GITHUB_PATH"
       - name: Patch Flutter dropdown menu
+        if: matrix.platform != 'linux-arm64'
         run: |
           flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
           git -C "$flutter_root" apply "$GITHUB_WORKSPACE/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+      - name: Patch Linux ARM64 Flutter dropdown menu
+        if: matrix.platform == 'linux-arm64'
+        run: git -C "$RUNNER_TEMP/mcp-flutter-elinux/flutter" apply "$GITHUB_WORKSPACE/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
       - name: Use the upstream Windows Flutter engine
         if: runner.os == 'Windows'
         shell: pwsh
@@ -196,6 +239,7 @@ jobs:
         run: |
           "$VCPKG_ROOT/vcpkg" install --triplet "${{ matrix.triplet }}" --x-install-root="$VCPKG_ROOT/installed"
       - name: Build MCP desktop application
+        if: matrix.platform != 'linux-arm64'
         env:
           ISOLATED_MACOS: ${{ inputs.isolated_macos }}
         run: |
@@ -213,6 +257,23 @@ jobs:
           fi
           python build.py "${args[@]}" --print-features
           python build.py "${args[@]}"
+      - name: Build MCP desktop application for Linux ARM64
+        if: matrix.platform == 'linux-arm64'
+        env:
+          DEB_ARCH: arm64
+        run: |
+          args=(--flutter --mcp --hwcodec --unix-file-copy-paste)
+          features="$(python build.py "${args[@]}" --print-features)"
+          sed -i 's/\["cdylib", "staticlib", "rlib"\]/["cdylib"]/' Cargo.toml
+          grep -Fq 'crate-type = ["cdylib"]' Cargo.toml
+          export CARGO_INCREMENTAL=0
+          cargo build --locked --lib --release --jobs "$CARGO_BUILD_JOBS" --features "$features"
+          test -s target/release/librustdesk.so
+          sed -i 's/flutter build linux --release/flutter-elinux build linux --verbose/' build.py
+          sed -i 's/x64\/release/arm64\/release/g' build.py
+          grep -Fq "flutter-elinux build linux --verbose" build.py
+          grep -Fq "build/linux/arm64/release/bundle/" build.py
+          python build.py "${args[@]}" --skip-cargo
       - name: Package Windows bundle
         if: runner.os == 'Windows'
         shell: pwsh
@@ -224,12 +285,20 @@ jobs:
           New-Item -ItemType Directory -Force dist
           Compress-Archive "$bundle/*" "dist/rustdesk-mcp-windows-x64.zip"
       - name: Package Linux bundle and Debian package
-        if: runner.os == 'Linux'
+        if: matrix.platform == 'linux-x64'
         run: |
           test -s flutter/build/linux/x64/release/bundle/rustdesk
           test -s flutter/build/linux/x64/release/bundle/lib/librustdesk.so
           mkdir -p dist
           tar -czf dist/rustdesk-mcp-linux-x64.tar.gz -C flutter/build/linux/x64/release bundle
+          cp rustdesk-*.deb dist/
+      - name: Package Linux ARM64 bundle and Debian package
+        if: matrix.platform == 'linux-arm64'
+        run: |
+          test -s flutter/build/linux/arm64/release/bundle/rustdesk
+          test -s flutter/build/linux/arm64/release/bundle/lib/librustdesk.so
+          mkdir -p dist
+          tar -czf dist/rustdesk-mcp-linux-arm64.tar.gz -C flutter/build/linux/arm64/release bundle
           cp rustdesk-*.deb dist/
       - name: Package macOS application with symlinks preserved
         if: runner.os == 'macOS'
