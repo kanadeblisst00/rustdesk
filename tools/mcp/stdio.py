@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Forward MCP stdio to the enabled RustDesk desktop's authenticated local endpoint."""
+"""Forward MCP stdio to a RustDesk desktop's authenticated IPv4 endpoint."""
 
 import argparse
 import http.client
+import ipaddress
 import json
 import os
 import sys
@@ -15,19 +16,31 @@ MAX_RESPONSE = 96 * 1024 * 1024
 class Proxy:
     def __init__(self, url, token):
         target = urlsplit(url)
+        hostname = target.hostname
+        if hostname == "localhost":
+            hostname = "127.0.0.1"
+        try:
+            address = ipaddress.IPv4Address(hostname)
+        except (ValueError, ipaddress.AddressValueError):
+            raise ValueError("MCP URL must use localhost or an IPv4 address") from None
         if (
             target.scheme != "http"
-            or target.hostname not in ("127.0.0.1", "localhost")
+            or address.is_unspecified or address.is_multicast
+            or address == ipaddress.IPv4Address("255.255.255.255")
+            or address.packed[0] == 0
             or target.path != "/mcp"
             or target.query
             or target.fragment
             or target.username
             or target.password
         ):
-            raise ValueError("MCP URL must be http://127.0.0.1:PORT/mcp")
-        if len(token) < 32 or any(ord(c) < 32 or ord(c) > 126 for c in token):
+            raise ValueError("MCP URL must be http://IPv4:PORT/mcp with a reachable host address")
+        if not 32 <= len(token) <= 256 or any(ord(c) < 33 or ord(c) > 126 for c in token):
             raise ValueError("Set RUSTDESK_MCP_TOKEN to the token from RustDesk MCP settings")
-        self.port = target.port or 80
+        self.port = target.port if target.port is not None else 80
+        if self.port == 0:
+            raise ValueError("MCP URL port must be between 1 and 65535")
+        self.host = str(address)
         self.token = token
         self.version = "2025-03-26"
 
@@ -35,7 +48,7 @@ class Proxy:
         payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(payload) > MAX_REQUEST:
             raise ValueError("MCP request exceeds 1 MiB")
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=70)
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=70)
         try:
             connection.request("POST", "/mcp", body=payload, headers={
                 "Authorization": "Bearer " + self.token,

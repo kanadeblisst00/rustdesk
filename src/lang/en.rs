@@ -278,6 +278,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("sync-clipboard-between-sessions-tip", "Text or images copied in one remote session are also sent to the clipboard of your other connected sessions."),
         ("terminal-clipboard-write-tip", "An app in the terminal wants to copy text to this device's clipboard. If granted, this permission applies to terminal apps in all connections until you turn it off in Settings. Manual copy and paste are unaffected."),
         ("port-forward-mux-tip", "Carry every connection of a port-forward mapping over a single connection to the peer, instead of connecting and logging in again for each one."),
-        ("agent-mcp-tip", "Allow local agents to control authorized remote devices. The service listens on localhost and requires a token. Enter comma-separated device IDs; an empty allowlist permits all devices. Disable the service to stop new MCP operations."),
+        ("agent-mcp-tip", "Allow agents to control authorized remote devices. Every MCP request requires a token. Enter comma-separated device IDs; an empty allowlist permits all devices. Disable the service to stop new MCP operations."),
+        ("agent-mcp-network-tip", "Use 127.0.0.1 for local access, 0.0.0.0 for all IPv4 interfaces, or a specific LAN IP. An optional :port overrides the default. Save to apply. For LAN clients, replace 127.0.0.1 in the copied configuration with this computer's LAN IP. HTTP does not encrypt the token; use a trusted network."),
+        ("agent-mcp-token-tip", "Use 32–256 visible ASCII characters without spaces. Leave empty to generate a random token. Save to apply; changing the token immediately revokes the previous one."),
     ].iter().cloned().collect();
 }

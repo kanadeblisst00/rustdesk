@@ -773,6 +773,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Enable MCP server", "启用 MCP 服务"),
         ("MCP device allowlist", "MCP 设备白名单"),
         ("Copy MCP configuration", "复制 MCP 配置"),
-        ("agent-mcp-tip", "允许本机 Agent 控制已授权的远程设备。服务仅监听本机地址并需要令牌；白名单填写逗号分隔的设备 ID，留空表示全部设备。关闭服务可停止新的 MCP 操作。"),
+        ("agent-mcp-tip", "允许 Agent 控制已授权的远程设备。所有 MCP 请求均需要令牌；白名单填写逗号分隔的设备 ID，留空表示全部设备。关闭服务可停止新的 MCP 操作。"),
+        ("MCP listen address", "MCP 监听地址"),
+        ("MCP token", "MCP 令牌"),
+        ("Generate MCP token", "生成 MCP 令牌"),
+        ("agent-mcp-network-tip", "本机访问使用 127.0.0.1，监听所有 IPv4 网卡使用 0.0.0.0，也可填写指定的局域网 IP；可添加 :端口。保存后生效。局域网客户端需将复制配置中的 127.0.0.1 替换为本机局域网 IP。HTTP 不加密令牌，请在可信网络中使用。"),
+        ("agent-mcp-token-tip", "使用 32–256 个不含空格的可见 ASCII 字符；留空将生成随机令牌。保存后生效，更换后旧令牌立即失效。"),
     ].iter().cloned().collect();
 }
