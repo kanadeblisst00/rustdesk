@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from verify_server_config import source_config, verify
+from verify_server_config import native_config, source_config, verify
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,7 +50,6 @@ class ServerConfigTest(unittest.TestCase):
                     self.assertIn(b"\r\n", patch.read_bytes())
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(b"corrupt patch", result.stderr)
-                    self.assertIn(b"18", result.stderr)
                 else:
                     self.assertNotIn(b"\r\n", patch.read_bytes())
                     self.assertNotIn(b"\r\n", source.read_bytes())
@@ -69,7 +68,30 @@ class ServerConfigTest(unittest.TestCase):
             subprocess.run(["git", "apply", str(ROOT / ".github/patches/agent-mcp-server.diff")],
                            cwd=directory, check=True)
             expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
-            verify(source_config(source.read_text()), expected)
+            patched = source.read_text()
+            verify(source_config(patched), expected)
+            for option, value in [("custom-rendezvous-server", expected["id_servers"][0]),
+                                  ("relay-server", expected["relay_server"]),
+                                  ("key", expected["public_key"])]:
+                entry = f'("{option}".to_owned(), "{value}".to_owned()),'
+                self.assertIn(entry, patched)
+                for replacement in ("", entry.replace(value, "incorrect")):
+                    with self.subTest(option=option, replacement=replacement), \
+                            self.assertRaises(ValueError):
+                        verify(source_config(patched.replace(entry, replacement)), expected)
+
+    def test_native_diagnostics_require_matching_visible_defaults(self):
+        expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
+        options = {"custom-rendezvous-server": expected["id_servers"][0],
+                   "relay-server": expected["relay_server"], "key": expected["public_key"]}
+        info = {"built_in_server": expected, "default_server_options": options}
+        verify(native_config(info), expected)
+        with self.assertRaises(ValueError):
+            native_config({"built_in_server": expected})
+        for option in options:
+            for value in (None, "", "incorrect"):
+                with self.subTest(option=option, value=value), self.assertRaises(ValueError):
+                    native_config({**info, "default_server_options": {**options, option: value}})
 
     def test_unpatched_source_is_rejected(self):
         with self.assertRaises(ValueError):

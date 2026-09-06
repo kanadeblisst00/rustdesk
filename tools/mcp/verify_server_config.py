@@ -17,11 +17,31 @@ def source_config(source):
                       defaults.group(1) if defaults else "")
     if not all((servers, key, relay)):
         raise ValueError("Missing source-embedded ID server, public key or relay default")
-    return {
+    result = {
         "id_servers": re.findall(r'"([^"\n]+)"', servers.group(1)),
         "relay_server": relay.group(1),
         "public_key": key.group(1),
     }
+    options = dict(re.findall(r'\("([^"\n]+)"\.to_owned\(\), "([^"\n]+)"\.to_owned\(\)\)',
+                              defaults.group(1)))
+    verify_default_options(options, result)
+    return result
+
+
+def verify_default_options(options, expected):
+    actual = {
+        "id_servers": [options.get("custom-rendezvous-server")],
+        "relay_server": options.get("relay-server"),
+        "public_key": options.get("key"),
+    }
+    if actual != expected:
+        raise ValueError("Server setting defaults differ from the embedded server configuration")
+
+
+def native_config(info):
+    result = info["built_in_server"]
+    verify_default_options(info.get("default_server_options", {}), result)
+    return result
 
 
 def verify(actual, expected):
@@ -41,6 +61,6 @@ if __name__ == "__main__":
     if args.source:
         actual = source_config(args.source.read_text(encoding="utf-8"))
     else:
-        actual = json.loads(args.native_info.read_text(encoding="utf-8"))["built_in_server"]
+        actual = native_config(json.loads(args.native_info.read_text(encoding="utf-8")))
     verify(actual, expected)
     print("Verified embedded server configuration:", json.dumps(actual))

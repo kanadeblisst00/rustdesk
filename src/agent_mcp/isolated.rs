@@ -41,6 +41,15 @@ fn allowed_command(command: Option<&str>) -> bool {
     )
 }
 
+fn default_server_options() -> serde_json::Value {
+    let defaults = config::DEFAULT_SETTINGS.read().unwrap();
+    serde_json::json!({
+        "custom-rendezvous-server": defaults.get("custom-rendezvous-server"),
+        "relay-server": defaults.get("relay-server"),
+        "key": defaults.get("key"),
+    })
+}
+
 pub fn allow_launch() -> bool {
     let command = std::env::args().skip(1).find(|arg| arg != "--no-server");
     if command.as_deref() == Some("--mcp-isolation-info") {
@@ -56,6 +65,7 @@ pub fn allow_launch() -> bool {
                 "mcp_endpoint": format!("http://{}/mcp", super::ADDRESS),
                 "outgoing_only": config::is_outgoing_only(),
                 "installation_disabled": config::is_disable_installation(),
+                "default_server_options": default_server_options(),
                 "built_in_server": {
                     "id_servers": config::RENDEZVOUS_SERVERS,
                     "public_key": config::RS_PUB_KEY,
