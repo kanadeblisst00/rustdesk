@@ -7,6 +7,7 @@ use axum::{
     routing::any,
     Json, Router,
 };
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -16,6 +17,7 @@ pub const MAX_BODY: usize = 1024 * 1024;
 struct HttpState {
     server: Arc<Server>,
     slots: Arc<Semaphore>,
+    listen_address: Option<SocketAddrV4>,
 }
 
 pub fn router(server: Arc<Server>) -> Router {
@@ -25,18 +27,102 @@ pub fn router(server: Arc<Server>) -> Router {
         .with_state(HttpState {
             server,
             slots: Arc::new(Semaphore::new(8)),
+            listen_address: None,
+        })
+}
+
+pub fn router_on(server: Arc<Server>, address: SocketAddrV4) -> Router {
+    if *address.ip() == Ipv4Addr::LOCALHOST {
+        return router(server);
+    }
+    Router::new()
+        .route("/mcp", any(handle))
+        .layer(DefaultBodyLimit::max(MAX_BODY))
+        .with_state(HttpState {
+            server,
+            slots: Arc::new(Semaphore::new(8)),
+            listen_address: Some(address),
         })
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, server: Arc<Server>) -> std::io::Result<()> {
     let guard = server.clone();
-    axum::serve(listener, router(server))
+    let app = match listener.local_addr()? {
+        SocketAddr::V4(address) => router_on(server, address),
+        SocketAddr::V6(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "MCP requires an IPv4 listen address",
+            ))
+        }
+    };
+    axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             while guard.backend.token().is_some() {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
         .await
+}
+
+pub fn valid_token(token: &str) -> bool {
+    (32..=256).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_graphic())
+}
+
+pub fn parse_listen_address(value: &str, default_port: u16) -> Result<SocketAddrV4, &'static str> {
+    let value = value.trim();
+    let address = if value.is_empty() {
+        SocketAddrV4::new(Ipv4Addr::LOCALHOST, default_port)
+    } else if let Ok(ip) = value.parse::<Ipv4Addr>() {
+        SocketAddrV4::new(ip, default_port)
+    } else {
+        value
+            .parse::<SocketAddrV4>()
+            .map_err(|_| "Use an IPv4 address, optionally followed by :port")?
+    };
+    if address.port() == 0
+        || address.ip().is_multicast()
+        || address.ip().is_broadcast()
+        || (address.ip().octets()[0] == 0 && !address.ip().is_unspecified())
+    {
+        return Err("Invalid MCP listen address or port");
+    }
+    Ok(address)
+}
+
+pub fn client_endpoint(address: SocketAddrV4) -> String {
+    let ip = if address.ip().is_unspecified() {
+        Ipv4Addr::LOCALHOST
+    } else {
+        *address.ip()
+    };
+    format!("http://{ip}:{}/mcp", address.port())
+}
+
+fn allowed_host(host: &str, address: Option<SocketAddrV4>) -> bool {
+    let (hostname, port) = match host.split_once(':') {
+        Some((name, port)) => match port.parse::<u16>() {
+            Ok(port) if port != 0 => (name, Some(port)),
+            _ => return false,
+        },
+        None => (host, None),
+    };
+    let Some(address) = address else {
+        return matches!(hostname, "localhost" | "127.0.0.1");
+    };
+    if port.unwrap_or(80) != address.port() {
+        return false;
+    }
+    if hostname == "localhost" {
+        return address.ip().is_unspecified() || address.ip().is_loopback();
+    }
+    let Ok(ip) = hostname.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    if ip.octets()[0] == 0 || ip.is_multicast() || ip.is_broadcast() {
+        return false;
+    }
+    address.ip().is_unspecified() || *address.ip() == ip
 }
 
 fn token_equal(expected: &str, actual: &str) -> bool {
@@ -61,14 +147,12 @@ async fn handle(
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let (hostname, valid_port) = match host.split_once(':') {
-        Some((name, port)) => (name, port.parse::<u16>().is_ok_and(|port| port != 0)),
-        None => (host, true),
-    };
-    if !valid_port || !matches!(hostname, "localhost" | "127.0.0.1") {
+    if headers.get_all(header::HOST).iter().count() != 1
+        || !allowed_host(host, state.listen_address)
+    {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Some(token) = state.server.backend.token().filter(|t| t.len() >= 32) else {
+    let Some(token) = state.server.backend.token().filter(|t| valid_token(t)) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let supplied = headers
@@ -76,7 +160,8 @@ async fn handle(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
-    if !token_equal(&token, supplied) {
+    if headers.get_all(header::AUTHORIZATION).iter().count() != 1 || !token_equal(&token, supplied)
+    {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],

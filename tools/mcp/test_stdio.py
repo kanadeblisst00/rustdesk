@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import unittest
+from unittest.mock import patch, MagicMock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SCRIPT = Path(__file__).with_name("stdio.py")
@@ -37,14 +38,29 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class ProxyTest(unittest.TestCase):
-    def test_loopback_and_token_validation(self):
+    def test_address_and_token_validation(self):
         for url in ("http://evil.test/mcp", "https://127.0.0.1/mcp", "http://localhost/mcp?x=1",
-                    "http://user:secret@localhost/mcp", "http://localhost/other"):
+                    "http://user:secret@localhost/mcp", "http://localhost/other",
+                    "http://0.0.0.0:59940/mcp", "http://[::1]/mcp", "http://224.0.0.1/mcp",
+                    "http://255.255.255.255/mcp", "http://localhost:0/mcp", "http://127.1/mcp",
+                    "http://192.168.1.20:65536/mcp", "http://0.1.2.3/mcp"):
             with self.assertRaises(ValueError):
                 proxy_module.Proxy(url, TOKEN)
-        for token in ("short", "x" * 32 + "\nInjected: header"):
+        for token in ("short", "x" * 32 + "\nInjected: header", " " * 32, "x" * 257):
             with self.assertRaises(ValueError):
                 proxy_module.Proxy("http://localhost:59940/mcp", token)
+
+    def test_lan_forwarding_uses_selected_host_and_bearer_token(self):
+        for host in ("192.168.1.20", "10.0.0.12", "172.16.1.2", "127.0.0.1", "localhost"):
+            with self.subTest(host=host), patch.object(proxy_module.http.client, "HTTPConnection") as connection:
+                response = MagicMock(status=200)
+                response.read.return_value = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+                connection.return_value.getresponse.return_value = response
+                proxy = proxy_module.Proxy("http://%s:60000/mcp" % host, TOKEN)
+                proxy.forward({"jsonrpc": "2.0", "id": 1, "method": "ping"})
+                connection.assert_called_once_with("127.0.0.1" if host == "localhost" else host, 60000, timeout=70)
+                self.assertEqual(connection.return_value.request.call_args.kwargs["headers"]["Authorization"], "Bearer " + TOKEN)
+                connection.return_value.close.assert_called_once()
 
     def test_stdio_forwarding_initialization_notifications_and_clean_stdout(self):
         Handler.seen = []

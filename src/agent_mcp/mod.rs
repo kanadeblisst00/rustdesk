@@ -5,6 +5,8 @@ mod session;
 mod automation;
 pub(crate) mod remote;
 mod wire;
+#[cfg(test)]
+mod network_tests;
 pub(crate) use automation::response as automation_response;
 
 use crate::flutter_ffi::SessionID;
@@ -22,6 +24,7 @@ use std::{
 
 pub const ENABLE: &str = "enable-agent-mcp";
 const TOKEN: &str = "agent-mcp-token";
+const BIND_ADDRESS: &str = "agent-mcp-bind-address";
 #[cfg(not(feature = "mcp-isolated"))]
 const ADDRESS: &str = "127.0.0.1:59940";
 #[cfg(feature = "mcp-isolated")]
@@ -55,11 +58,26 @@ fn enabled() -> bool {
     LocalConfig::get_option(ENABLE) == "Y"
 }
 
+fn listen_address() -> Result<std::net::SocketAddrV4, &'static str> {
+    let default = ADDRESS
+        .parse::<std::net::SocketAddrV4>()
+        .map_err(|_| "Invalid default MCP address")?;
+    rustdesk_agent_mcp::http::parse_listen_address(
+        &LocalConfig::get_option(BIND_ADDRESS),
+        default.port(),
+    )
+}
+
 pub fn local_option(key: &str) -> Option<String> {
     match key {
         "agent-mcp-supported" => Some("Y".into()),
         "agent-mcp-status" => Some(STATUS.lock().unwrap().clone()),
-        "agent-mcp-endpoint" => Some(format!("http://{ADDRESS}/mcp")),
+        "agent-mcp-endpoint" => Some(
+            listen_address()
+                .map(rustdesk_agent_mcp::http::client_endpoint)
+                .unwrap_or_default(),
+        ),
+        "agent-mcp-default-address" => Some(ADDRESS.into()),
         _ => None,
     }
 }
@@ -103,10 +121,23 @@ pub fn start() {
                             ),
                         );
                     }
-                    match tokio::net::TcpListener::bind(ADDRESS).await {
+                    let address = match listen_address() {
+                        Ok(address) => address,
+                        Err(e) => {
+                            *STATUS.lock().unwrap() = format!("MCP listener: {e}");
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    };
+                    if !rustdesk_agent_mcp::http::valid_token(&LocalConfig::get_option(TOKEN)) {
+                        *STATUS.lock().unwrap() = "MCP token must contain 32–256 visible ASCII characters without spaces".into();
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    match tokio::net::TcpListener::bind(address).await {
                         Ok(listener) => {
-                            *STATUS.lock().unwrap() = format!("Listening on http://{ADDRESS}/mcp");
-                            let server = Arc::new(Server::new(Arc::new(DesktopBackend)));
+                            *STATUS.lock().unwrap() = format!("Listening on http://{address}/mcp");
+                            let server = Arc::new(Server::new(Arc::new(DesktopBackend { address })));
                             if let Err(e) = rustdesk_agent_mcp::http::serve(listener, server).await
                             {
                                 log::error!("Agent MCP server: {e}");
@@ -139,11 +170,15 @@ fn cleanup() {
     }
 }
 
-struct DesktopBackend;
+struct DesktopBackend {
+    address: std::net::SocketAddrV4,
+}
 
 impl Backend for DesktopBackend {
     fn token(&self) -> Option<String> {
-        enabled().then(|| LocalConfig::get_option(TOKEN))
+        (enabled() && listen_address() == Ok(self.address))
+            .then(|| LocalConfig::get_option(TOKEN))
+            .filter(|token| rustdesk_agent_mcp::http::valid_token(token))
     }
 
     fn call(&self, name: &str, args: &Map<String, Value>) -> ToolResult {
