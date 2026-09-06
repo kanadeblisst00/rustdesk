@@ -150,16 +150,7 @@ pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {
             return Err(format!("Unable to start session: {e}"));
         }
     } else {
-        let option = match kind {
-            "terminal" => "--terminal",
-            "files" => "--file-transfer",
-            _ => "--connect",
-        };
-        let mut launch = vec![option, peer];
-        if flag(args, "force_relay") {
-            launch.push("--relay");
-        }
-        crate::run_me(launch).map_err(|e| format!("Unable to open RustDesk window: {e}"))?;
+        open_window(peer, kind, flag(args, "force_relay"))?;
     }
     let deadline = Instant::now() + Duration::from_millis(number(args, "timeout_ms", 12000) as u64);
     let mut found = None;
@@ -183,6 +174,29 @@ pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {
     found
         .map(success)
         .ok_or_else(|| "RustDesk did not create a session before timeout".into())
+}
+
+fn window_event(prefix: &str, peer: &str, kind: &str, force_relay: bool) -> String {
+    let authority = match kind {
+        "terminal" => "terminal",
+        "files" => "file-transfer",
+        _ => "connect",
+    };
+    let query = if force_relay { "?relay=true" } else { "" };
+    json!({"name":"on_url_scheme_received",
+        "url":format!("{prefix}{authority}/{peer}{query}")})
+    .to_string()
+}
+
+fn open_window(peer: &str, kind: &str, force_relay: bool) -> Result<(), String> {
+    // The MCP listener must create the window in its own process, not an IPC-selected instance.
+    match crate::flutter::push_global_event(
+        crate::flutter::APP_TYPE_MAIN,
+        window_event(&crate::get_uri_prefix(), peer, kind, force_relay),
+    ) {
+        Some(true) => Ok(()),
+        _ => Err("RustDesk main window is unavailable; reopen it or use headless:true".into()),
+    }
 }
 
 pub(super) fn send(s: &FlutterSession, data: Data) -> Result<(), String> {
@@ -507,4 +521,42 @@ fn file(
     Ok(success(
         json!({"queued":true,"job_id":job,"after_cursor":cursor}),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_connection_preserves_kind_peer_and_relay() {
+        for (kind, authority) in [
+            ("desktop", "connect"),
+            ("files", "file-transfer"),
+            ("terminal", "terminal"),
+        ] {
+            for (prefix, relay) in [
+                ("rustdesk://", false),
+                ("rustdesk://", true),
+                ("rustdeskmcptest://", false),
+                ("rustdeskmcptest://", true),
+            ] {
+                let event: Value =
+                    serde_json::from_str(&window_event(prefix, "123456789", kind, relay)).unwrap();
+                assert_eq!(event["name"], "on_url_scheme_received");
+                let url = url::Url::parse(event["url"].as_str().unwrap()).unwrap();
+                assert_eq!(url.scheme(), prefix.trim_end_matches("://"));
+                assert_eq!(url.host_str(), Some(authority));
+                assert_eq!(url.path(), "/123456789");
+                assert_eq!(url.query(), relay.then_some("relay=true"));
+            }
+        }
+    }
+
+    #[test]
+    fn missing_main_window_fails_without_launching_another_process() {
+        assert!(crate::flutter::get_global_event_channels().is_empty());
+        assert!(open_window("123456789", "desktop", false)
+            .unwrap_err()
+            .contains("main window is unavailable"));
+    }
 }
