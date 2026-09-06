@@ -23,24 +23,30 @@ class ServerConfigTest(unittest.TestCase):
             source.write_bytes(original)
             patch = repository / "server.diff"
             patch.write_bytes((ROOT / ".github/patches/agent-mcp-server.diff").read_bytes())
+            (repository / ".gitattributes").write_bytes((ROOT / ".gitattributes").read_bytes())
             subprocess.run(["git", "init", "-q", str(repository)], check=True)
+            # Simulate Windows native checkout line endings on any test host.
+            subprocess.run(["git", "config", "core.eol", "crlf"], cwd=repository, check=True)
             files = ["src/config.rs", "server.diff"]
-            subprocess.run(["git", "-c", "core.autocrlf=false", "add", "--", *files],
+            subprocess.run(["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                            "add", "--", *files, ".gitattributes"],
                            cwd=repository, check=True)
-            for mode in ["true", "false"]:
-                output = root / mode
+            for name, mode, eol in [("auto-crlf", "true", None),
+                                    ("autocrlf-off", "false", None),
+                                    ("explicit-lf", "false", "lf")]:
+                output = root / name
+                env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+                       "GIT_CONFIG_KEY_0": "core.autocrlf", "GIT_CONFIG_VALUE_0": mode}
+                if eol:
+                    env.update(GIT_CONFIG_COUNT="2", GIT_CONFIG_KEY_1="core.eol",
+                               GIT_CONFIG_VALUE_1=eol)
                 subprocess.run(["git", "checkout-index", "--prefix=" + str(output) + "/",
-                                "--", *files], cwd=repository, check=True, env={
-                                    **os.environ,
-                                    "GIT_CONFIG_COUNT": "1",
-                                    "GIT_CONFIG_KEY_0": "core.autocrlf",
-                                    "GIT_CONFIG_VALUE_0": mode,
-                                })
+                                "--", *files], cwd=repository, check=True, env=env)
                 patch = output / "server.diff"
                 source = output / "src/config.rs"
                 result = subprocess.run(["git", "apply", "--check", str(patch)],
                                         cwd=output, capture_output=True)
-                if mode == "true":
+                if not eol:
                     self.assertIn(b"\r\n", patch.read_bytes())
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(b"corrupt patch", result.stderr)
