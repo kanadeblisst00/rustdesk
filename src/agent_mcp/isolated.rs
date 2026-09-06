@@ -47,6 +47,7 @@ fn default_server_options() -> serde_json::Value {
         "custom-rendezvous-server": defaults.get("custom-rendezvous-server"),
         "relay-server": defaults.get("relay-server"),
         "key": defaults.get("key"),
+        "force-always-relay": defaults.get("force-always-relay"),
     })
 }
 
@@ -71,6 +72,9 @@ pub fn allow_launch() -> bool {
                     "public_key": config::RS_PUB_KEY,
                     "relay_server": config::DEFAULT_SETTINGS.read().unwrap()
                         .get("relay-server").cloned().unwrap_or_default(),
+                    "always_relay": config::DEFAULT_SETTINGS.read().unwrap()
+                        .get("force-always-relay").map_or(false, |value| value == "Y"),
+                    "default_stun_servers": hbb_common::webrtc::WebRTCStream::default_stun_servers(),
                 },
             })
         );

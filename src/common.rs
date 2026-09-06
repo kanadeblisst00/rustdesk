@@ -2531,6 +2531,9 @@ async fn test_bind_ipv6() -> ResultType<SocketAddr> {
 }
 
 pub async fn test_ipv6() -> Option<tokio::task::JoinHandle<()>> {
+    if hbb_common::webrtc::WebRTCStream::default_stun_servers().is_empty() {
+        return None;
+    }
     if PUBLIC_IPV6_ADDR
         .lock()
         .unwrap()

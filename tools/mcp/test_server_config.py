@@ -15,19 +15,22 @@ class ServerConfigTest(unittest.TestCase):
     def test_crlf_checkout_is_normalized_before_applying_patch(self):
         original = subprocess.check_output(
             ["git", "-C", str(ROOT / "libs/hbb_common"), "show", "HEAD:src/config.rs"])
+        original_webrtc = subprocess.check_output(
+            ["git", "-C", str(ROOT / "libs/hbb_common"), "show", "HEAD:src/webrtc.rs"])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repository = root / "repository"
             source = repository / "src/config.rs"
             source.parent.mkdir(parents=True)
             source.write_bytes(original)
+            source.with_name("webrtc.rs").write_bytes(original_webrtc)
             patch = repository / "server.diff"
             patch.write_bytes((ROOT / ".github/patches/agent-mcp-server.diff").read_bytes())
             (repository / ".gitattributes").write_bytes((ROOT / ".gitattributes").read_bytes())
             subprocess.run(["git", "init", "-q", str(repository)], check=True)
             # Simulate Windows native checkout line endings on any test host.
             subprocess.run(["git", "config", "core.eol", "crlf"], cwd=repository, check=True)
-            files = ["src/config.rs", "server.diff"]
+            files = ["src/config.rs", "src/webrtc.rs", "server.diff"]
             subprocess.run(["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
                             "add", "--", *files, ".gitattributes"],
                            cwd=repository, check=True)
@@ -56,34 +59,44 @@ class ServerConfigTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     subprocess.run(["git", "apply", str(patch)], cwd=output, check=True)
                     expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
-                    verify(source_config(source.read_text()), expected)
+                    verify(source_config(source.read_text(),
+                                         source.with_name("webrtc.rs").read_text()), expected)
 
     def test_patch_applies_to_pinned_submodule_and_matches_manifest(self):
         original = subprocess.check_output(
             ["git", "-C", str(ROOT / "libs/hbb_common"), "show", "HEAD:src/config.rs"])
+        original_webrtc = subprocess.check_output(
+            ["git", "-C", str(ROOT / "libs/hbb_common"), "show", "HEAD:src/webrtc.rs"])
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "src/config.rs"
             source.parent.mkdir()
             source.write_bytes(original)
+            source.with_name("webrtc.rs").write_bytes(original_webrtc)
             subprocess.run(["git", "apply", str(ROOT / ".github/patches/agent-mcp-server.diff")],
                            cwd=directory, check=True)
             expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
             patched = source.read_text()
-            verify(source_config(patched), expected)
+            patched_webrtc = source.with_name("webrtc.rs").read_text()
+            verify(source_config(patched, patched_webrtc), expected)
+            with self.assertRaises(ValueError):
+                verify(source_config(patched, original_webrtc.decode()), expected)
             for option, value in [("custom-rendezvous-server", expected["id_servers"][0]),
                                   ("relay-server", expected["relay_server"]),
-                                  ("key", expected["public_key"])]:
+                                  ("key", expected["public_key"]),
+                                  ("force-always-relay", "Y")]:
                 entry = f'("{option}".to_owned(), "{value}".to_owned()),'
                 self.assertIn(entry, patched)
                 for replacement in ("", entry.replace(value, "incorrect")):
                     with self.subTest(option=option, replacement=replacement), \
                             self.assertRaises(ValueError):
-                        verify(source_config(patched.replace(entry, replacement)), expected)
+                        verify(source_config(patched.replace(entry, replacement), patched_webrtc),
+                               expected)
 
     def test_native_diagnostics_require_matching_visible_defaults(self):
         expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
         options = {"custom-rendezvous-server": expected["id_servers"][0],
-                   "relay-server": expected["relay_server"], "key": expected["public_key"]}
+                   "relay-server": expected["relay_server"], "key": expected["public_key"],
+                   "force-always-relay": "Y"}
         info = {"built_in_server": expected, "default_server_options": options}
         verify(native_config(info), expected)
         with self.assertRaises(ValueError):
@@ -93,9 +106,23 @@ class ServerConfigTest(unittest.TestCase):
                 with self.subTest(option=option, value=value), self.assertRaises(ValueError):
                     native_config({**info, "default_server_options": {**options, option: value}})
 
+    def test_relay_policy_must_be_enabled_in_manifest_and_binary(self):
+        expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
+        for value in (None, False, "Y", 1):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                actual = {**expected, "always_relay": value}
+                verify(actual, actual)
+
     def test_unpatched_source_is_rejected(self):
         with self.assertRaises(ValueError):
-            source_config('pub const RS_PUB_KEY: &str = "upstream";')
+            source_config('pub const RS_PUB_KEY: &str = "upstream";', "")
+
+    def test_public_stun_fallbacks_are_rejected_even_if_manifest_matches(self):
+        expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
+        for value in (None, ["stun.l.google.com:19302"], ["stun.cloudflare.com:3478"]):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                actual = {**expected, "default_stun_servers": value}
+                verify(actual, actual)
 
     def test_mismatched_native_config_is_rejected(self):
         expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
