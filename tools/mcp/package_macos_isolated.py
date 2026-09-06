@@ -62,6 +62,8 @@ def package(app):
     with info_path.open("wb") as stream:
         plistlib.dump(metadata, stream)
     # Xcode signed the original bundle before its metadata and service were staged.
+    subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none",
+                    str(app / "Contents/MacOS/service")], check=True)
     subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(app)], check=True)
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
     app.rename(target)
