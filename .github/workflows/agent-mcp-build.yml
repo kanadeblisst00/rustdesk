@@ -13,8 +13,9 @@ permissions:
 
 env:
   FLUTTER_VERSION: "3.24.5"
-  FLUTTER_ELINUX_VERSION: "3.16.9"
-  FLUTTER_ELINUX_COMMIT_ID: "c02bd16e1630f5bd690b85c5c2456ac1920e25af"
+  # Keep flutter-elinux's embedded Flutter aligned with the desktop SDK and its source patch.
+  FLUTTER_ELINUX_VERSION: "3.24.5"
+  FLUTTER_ELINUX_COMMIT_ID: "ac5e8387cdeadece7ed747d99da24d02adb354a6"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   CARGO_BUILD_JOBS: "3"
 
@@ -207,6 +208,7 @@ jobs:
           git clone --depth 1 --branch "$FLUTTER_ELINUX_VERSION" \
             https://github.com/sony/flutter-elinux.git "$RUNNER_TEMP/mcp-flutter-elinux"
           test "$(git -C "$RUNNER_TEMP/mcp-flutter-elinux" rev-parse HEAD)" = "$FLUTTER_ELINUX_COMMIT_ID"
+          test "$(sed -n '2p' "$RUNNER_TEMP/mcp-flutter-elinux/bin/internal/flutter.version")" = "$FLUTTER_VERSION"
           "$RUNNER_TEMP/mcp-flutter-elinux/bin/flutter-elinux" doctor -v
           "$RUNNER_TEMP/mcp-flutter-elinux/bin/flutter-elinux" precache --linux
           mkdir -p "$RUNNER_TEMP/mcp-flutter-elinux/flutter/bin/cache/artifacts/engine/linux-arm64"
