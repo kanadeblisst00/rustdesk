@@ -1,7 +1,13 @@
 import copy
+import json
+from pathlib import Path
+import plistlib
+import subprocess
+import tempfile
 import unittest
+from unittest.mock import call, patch
 
-from package_macos_isolated import BUNDLE_ID, isolated_plist, validate_native_info
+from package_macos_isolated import BUNDLE_ID, isolated_plist, package, validate_native_info
 
 
 class MacIsolationTest(unittest.TestCase):
@@ -31,6 +37,39 @@ class MacIsolationTest(unittest.TestCase):
         for key in valid:
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_native_info({**valid, key: None})
+
+    def test_package_signs_staged_service_before_bundle(self):
+        for helper_fails in (False, True):
+            with self.subTest(helper_fails=helper_fails), tempfile.TemporaryDirectory() as root:
+                app = Path(root).resolve() / 'Release/RustDesk.app'
+                (app / 'Contents/MacOS').mkdir(parents=True)
+                with (app / 'Contents/Info.plist').open('wb') as stream:
+                    plistlib.dump({'CFBundleIdentifier': BUNDLE_ID}, stream)
+                sign = ['codesign', '--force', '--sign', '-', '--timestamp=none']
+                native = subprocess.CompletedProcess([], 0, stdout=json.dumps({}))
+                helper = subprocess.CalledProcessError(1, sign) if helper_fails else None
+                with patch('package_macos_isolated.subprocess.run',
+                           side_effect=[native, helper, None, None]) as run, \
+                        patch('package_macos_isolated.validate_native_info') as validate:
+                    if helper_fails:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            package(app)
+                    else:
+                        package(app)
+                    validate.assert_called_once_with({})
+                expected = [
+                    call([str(app / 'Contents/MacOS/RustDesk'), '--mcp-isolation-info'],
+                         check=True, capture_output=True, text=True, timeout=30),
+                    call(sign + [str(app / 'Contents/MacOS/service')], check=True),
+                ]
+                if not helper_fails:
+                    expected += [
+                        call(sign + [str(app)], check=True),
+                        call(['codesign', '--verify', '--deep', '--strict', str(app)], check=True),
+                    ]
+                self.assertEqual(run.call_args_list, expected)
+                self.assertEqual(app.exists(), helper_fails)
+                self.assertEqual(app.with_name('RustDeskMCPTest.app').exists(), not helper_fails)
 
 
 if __name__ == '__main__':
