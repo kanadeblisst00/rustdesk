@@ -34,7 +34,7 @@
 
 本 fork 的 MCP 构建会将 ID 服务器 `r5.ikanade.cn:21116`、中继 `r5.ikanade.cn:21117` 和公钥 `avD+qUiwBe013hPPKQjCO81ekJTDoqkxmxDXPkRMAe8=` 编译进客户端。这是公开的连接配置，不是服务端私钥或远程设备密码。
 
-采用教程的源码常量方案：在当前锁定的 `hbb_common` 上应用 `.github/patches/agent-mcp-server.diff`，修改 `RENDEZVOUS_SERVERS`、`RS_PUB_KEY`，并为 `relay-server` 添加默认值。不切换子模块分支，不修改上游发布工作流或 Actions 写权限。CI 会校验补丁后的源码；macOS 隔离包还执行原生诊断命令验证实际编译值。每份桌面产物附带 `SERVER-CONFIG.json`。
+采用教程的源码常量方案：在当前锁定的 `hbb_common` 上应用 `.github/patches/agent-mcp-server.diff`，修改 `RENDEZVOUS_SERVERS`、`RS_PUB_KEY`，并为 `custom-rendezvous-server`、`relay-server`、`key` 添加默认值。设置页读取的是配置选项而非编译常量，因此三项都提供默认配置，确保新配置的 ID、中继和 Key 输入框完整预填。不切换子模块分支，不修改上游发布工作流或 Actions 写权限。CI 会同时校验源码中的常量和设置默认值；macOS 隔离包还执行原生诊断命令验证 `built_in_server` 与 `default_server_options`。每份桌面产物附带 `SERVER-CONFIG.json`。
 
 本地编译同一配置时，先执行以下命令，再运行带 `--mcp` 的构建。补丁只应用一次；`--check` 失败时先检查子模块版本和本地修改，不强行覆盖：
 

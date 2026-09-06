@@ -1,18 +1,20 @@
 diff --git a/src/config.rs b/src/config.rs
 --- a/src/config.rs
 +++ b/src/config.rs
-@@ -73,7 +73,9 @@ lazy_static::lazy_static! {
+@@ -73,7 +73,11 @@ lazy_static::lazy_static! {
      static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();
      static ref USER_DEFAULT_CONFIG: RwLock<(UserDefaultConfig, Instant)> = RwLock::new((UserDefaultConfig::load(), Instant::now()));
      pub static ref NEW_STORED_PEER_CONFIG: Mutex<HashSet<String>> = Default::default();
 -    pub static ref DEFAULT_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
 +    pub static ref DEFAULT_SETTINGS: RwLock<HashMap<String, String>> = RwLock::new(HashMap::from([
++        ("custom-rendezvous-server".to_owned(), "r5.ikanade.cn:21116".to_owned()),
 +        ("relay-server".to_owned(), "r5.ikanade.cn:21117".to_owned()),
++        ("key".to_owned(), "avD+qUiwBe013hPPKQjCO81ekJTDoqkxmxDXPkRMAe8=".to_owned()),
 +    ]));
      pub static ref OVERWRITE_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
      pub static ref DEFAULT_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
      pub static ref OVERWRITE_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-@@ -114,8 +116,8 @@ const CHARS: &[char] = &[
+@@ -114,8 +118,8 @@ const CHARS: &[char] = &[
      'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
  ];
 
