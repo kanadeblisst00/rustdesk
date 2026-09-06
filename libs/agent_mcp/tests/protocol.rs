@@ -120,6 +120,52 @@ fn invalid_requests_and_arguments_cannot_act() {
 }
 
 #[test]
+fn automation_tools_validate_targets_and_read_only_annotations() {
+    let backend = Arc::new(Fake::default());
+    let server = Server::new(backend.clone());
+    for (name, arguments) in [
+        ("click_text", json!({"session":"s","text":""})),
+        (
+            "click_text",
+            json!({"session":"s","text":"保存","match_index":512}),
+        ),
+        ("set_ui_value", json!({"session":"s","value":"text"})),
+        (
+            "invoke_ui_element",
+            json!({"session":"s","element_id":"id","action":"shell"}),
+        ),
+        (
+            "find_text",
+            json!({"session":"s","text":"yes","automation_id":"invalid"}),
+        ),
+        ("get_ui_tree", json!({"session":"s","timeout_ms":10001})),
+        ("get_ui_state", json!({"session":"s","display":64})),
+    ] {
+        let result = server
+            .dispatch(request(
+                "tools/call",
+                json!({"name":name,"arguments":arguments}),
+            ))
+            .unwrap();
+        assert_eq!(result["error"]["code"], -32602, "{result}");
+    }
+    assert_eq!(backend.calls.load(Ordering::Relaxed), 0);
+    let tools = catalog::tools();
+    assert_eq!(tools.len(), 43);
+    for tool in tools
+        .iter()
+        .filter(|t| rustdesk_agent_mcp::automation::is_tool(t["name"].as_str().unwrap()))
+    {
+        let write = matches!(
+            tool["name"].as_str().unwrap(),
+            "click_text" | "invoke_ui_element" | "set_ui_value"
+        );
+        assert_eq!(tool["annotations"]["readOnlyHint"], !write);
+        assert_eq!(tool["annotations"]["destructiveHint"], write);
+    }
+}
+
+#[test]
 fn errors_resources_prompts_and_catalog_are_consistent() {
     let server = Server::new(Arc::new(Fake::default()));
     let result = server

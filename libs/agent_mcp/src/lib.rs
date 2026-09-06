@@ -1,5 +1,7 @@
+pub mod automation;
 pub mod catalog;
 pub mod events;
+pub mod helper;
 pub mod http;
 pub mod pixels;
 

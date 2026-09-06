@@ -246,6 +246,8 @@ impl TerminalUserToken {
 }
 pub struct Connection {
     inner: ConnInner,
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    agent_uia: crate::agent_mcp::remote::Worker,
     display_idx: usize,
     stream: super::Stream,
     server: super::ServerPtrWeak,
@@ -450,6 +452,8 @@ impl Connection {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let tx_cloned = tx.clone();
         let mut conn = Self {
+            #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+            agent_uia: Default::default(),
             inner: ConnInner {
                 id,
                 tx: Some(tx),
@@ -674,6 +678,8 @@ impl Connection {
                             log::info!("Change permission {} -> {}", name, enabled);
                             if &name == "keyboard" {
                                 conn.keyboard = enabled;
+                                #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+                                conn.agent_uia.cancel_if(!conn.peer_keyboard_enabled());
                                 conn.send_permission(Permission::Keyboard, enabled).await;
                                 if let Some(s) = conn.server.upgrade() {
                                     s.write().unwrap().subscribe(
@@ -3009,6 +3015,10 @@ impl Connection {
             if self.port_forward_socket.is_some() {
                 return true;
             }
+            #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+            if crate::agent_mcp::remote::dispatch(&msg, self.peer_keyboard_enabled(), matches!(self.authed_conn_type(), Some(AuthConnType::Remote)), &self.agent_uia, &self.inner.tx) {
+                return true;
+            }
             match msg.union {
                 #[allow(unused_mut)]
                 Some(message::Union::MouseEvent(mut me)) => {
@@ -4829,6 +4839,8 @@ impl Connection {
         if let Ok(q) = o.disable_keyboard.enum_value() {
             if q != BoolOption::NotSet {
                 self.disable_keyboard = q == BoolOption::Yes;
+                #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+                self.agent_uia.cancel_if(!self.peer_keyboard_enabled());
                 if let Some(s) = self.server.upgrade() {
                     s.write().unwrap().subscribe(
                         super::clipboard_service::NAME,
@@ -5079,6 +5091,8 @@ impl Connection {
     }
 
     async fn on_close(&mut self, reason: &str, lock: bool) {
+        #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+        self.agent_uia.cancel_if(true);
         if self.closed {
             return;
         }
