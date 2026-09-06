@@ -19,13 +19,14 @@
 
 | Artifact | 内容 |
 | --- | --- |
-| `rustdesk-mcp-windows-x64` | Windows x64 应用目录 ZIP；完整解压后运行 `rustdesk.exe` |
+| `rustdesk-mcp-windows-x64.exe` | Windows x64 自解压可执行文件；可直接运行或安装 |
 | `rustdesk-mcp-linux-x64` | Ubuntu 22.04 环境构建的 Debian 包和应用目录 TAR.GZ |
 | `rustdesk-mcp-linux-arm64` | Ubuntu 22.04 ARM64 环境构建的 Debian 包和应用目录 TAR.GZ |
 | `rustdesk-mcp-macos-x64` | Intel Mac 的 `.app.zip` |
 | `rustdesk-mcp-macos-arm64` | Apple Silicon 的 `.app.zip`，最低 macOS 12.3 |
+| `rustdesk-mcp-toolkit.zip` | MCP stdio 代理、OCR 依赖、服务器配置、使用说明及 `COMMIT.txt` |
 
-等待目标平台任务成功后，在该次运行的 **Summary → Artifacts** 下载对应包。每份产物同时包含 `stdio.py`、本说明及 `COMMIT.txt`；`mcp-bridge` 只是构建中间文件。产物保留 14 天，可通过再次运行重新构建。
+等待目标平台任务成功后，在该次运行的 **Summary → Artifacts** 下载对应应用和独立的 MCP 工具包。Windows 使用 RustDesk 自带的 portable packer，将 Flutter 应用目录嵌入一个可直接运行或安装的自解压 EXE；MCP 工具包只生成一次，避免在每个平台产物中重复。`mcp-bridge` 只是构建中间文件。最终产物保留 14 天，可通过再次运行重新构建。
 
 这些是未进行发行签名/公证的测试包，不是正式签名安装器。Windows 包不附带上游发布流程额外下载的虚拟显示器和打印机驱动，也未启用 `vram`。Linux x64 与 ARM64 运行仍需要系统图形/音频等依赖，不保证兼容比 Ubuntu 22.04 更老的发行版；ARM64 使用项目上游采用的 `flutter-elinux` 构建路径。macOS 首次打开可能需要按系统提示允许该应用；不要全局关闭系统安全保护。安装后仍需手动启用 MCP 服务并配置授权。
 
@@ -35,7 +36,7 @@
 
 本 fork 的 MCP 构建会将 ID 服务器 `r5.ikanade.cn:21116`、中继 `r5.ikanade.cn:21117` 和公钥 `avD+qUiwBe013hPPKQjCO81ekJTDoqkxmxDXPkRMAe8=` 编译进客户端。这是公开的连接配置，不是服务端私钥或远程设备密码。
 
-采用教程的源码常量方案：在当前锁定的 `hbb_common` 上应用 `.github/patches/agent-mcp-server.diff`，修改 `RENDEZVOUS_SERVERS`、`RS_PUB_KEY`，并为 `custom-rendezvous-server`、`relay-server`、`key` 添加默认值。设置页读取的是配置选项而非编译常量，因此三项都提供默认配置，确保新配置的 ID、中继和 Key 输入框完整预填。不切换子模块分支，不启用上游发布流程或 Actions 写权限。构建工作流会同时校验源码中的常量和设置默认值；macOS 隔离包还执行原生诊断命令验证 `built_in_server` 与 `default_server_options`。每份桌面产物附带 `SERVER-CONFIG.json`。
+采用教程的源码常量方案：在当前锁定的 `hbb_common` 上应用 `.github/patches/agent-mcp-server.diff`，修改 `RENDEZVOUS_SERVERS`、`RS_PUB_KEY`，并为 `custom-rendezvous-server`、`relay-server`、`key` 添加默认值。设置页读取的是配置选项而非编译常量，因此三项都提供默认配置，确保新配置的 ID、中继和 Key 输入框完整预填。不切换子模块分支，不启用上游发布流程或 Actions 写权限。构建工作流会同时校验源码中的常量和设置默认值；macOS 隔离包还执行原生诊断命令验证 `built_in_server` 与 `default_server_options`。独立 MCP 工具包附带 `SERVER-CONFIG.json`。
 
 本地编译同一配置时，先执行以下命令，再运行带 `--mcp` 的构建。补丁只应用一次；`--check` 失败时先检查子模块版本和本地修改，不强行覆盖：
 
@@ -170,7 +171,7 @@ export RUSTDESK_MCP_OCR_PYTHON=/absolute/path/rustdesk-ocr/bin/python
 # 从此终端启动新版 RustDesk 可执行文件，使应用进程继承环境变量。
 ```
 
-Windows 使用该 venv 的 `Scripts/python.exe`，在启动 RustDesk 的 PowerShell 中设置 `$env:RUSTDESK_MCP_OCR_PYTHON='C:\absolute\path\rustdesk-ocr\Scripts\python.exe'`。下载的构建产物附带 `ocr-requirements.txt`，可直接用它安装；辅助脚本已经嵌入 Rust 二进制，无需另配脚本路径。模型/运行时不捆绑进应用包。`get_capabilities.ocr_details.configured` 表示设置了 Python 路径，实际模型加载结果由 `ocr.available/error` 给出。
+Windows 使用该 venv 的 `Scripts/python.exe`，在启动 RustDesk 的 PowerShell 中设置 `$env:RUSTDESK_MCP_OCR_PYTHON='C:\absolute\path\rustdesk-ocr\Scripts\python.exe'`。下载 MCP 工具包中的 `ocr-requirements.txt` 可直接安装依赖；辅助脚本已经嵌入 Rust 二进制，无需另配脚本路径。模型/运行时不捆绑进应用包。`get_capabilities.ocr_details.configured` 表示设置了 Python 路径，实际模型加载结果由 `ocr.available/error` 给出。
 
 工具工作流：
 
