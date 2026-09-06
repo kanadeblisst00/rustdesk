@@ -1,0 +1,10 @@
+# Shared dependency pins consumed by flutter/build_fdroid.sh.
+env:
+  CARGO_NDK_VERSION: "3.1.2"
+  FLUTTER_VERSION: "3.24.5"
+  FLUTTER_BRIDGE_VERSION: "3.22.3"
+  CARGO_EXPAND_VERSION: "1.0.95"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+  NDK_VERSION: "r28c"
+  RUST_VERSION: "1.75"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"

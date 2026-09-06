@@ -4,7 +4,7 @@
 
 ## 构建与启用
 
-1. 按项目 Flutter 构建流程安装 Rust、Flutter、原生依赖和生成桥接代码，初始化 Git 子模块。版本及依赖以 `.github/workflows/flutter-build.yml` 和 `bridge.yml` 为准。
+1. 按项目 Flutter 构建流程安装 Rust、Flutter、原生依赖和生成桥接代码，初始化 Git 子模块。GitHub 多平台版本及依赖以 `.github/workflows/agent-mcp-build.yml` 为准；F-Droid 复用版本常量位于 `.github/build-versions.yml`。
 2. 使用 `python3 build.py --flutter --mcp` 构建桌面应用；可用 `--print-features` 检查参数。手动 Rust 构建使用 `cargo build --locked --release --features mcp --lib`，再按平台 Flutter 流程打包该库。
 3. 启动构建后的 RustDesk，在「设置 → 安全」启用「Enable MCP server / 启用 MCP 服务」。普通发行版未包含 `mcp` feature 时不显示此设置。
 4. 建议先配置设备白名单和只读模式，再点击「复制 MCP 配置」。启动成功的状态应为 `Listening on http://127.0.0.1:59940/mcp`。
@@ -15,26 +15,27 @@
 
 在自己的 fork 中打开 **Actions → MCP desktop build → Run workflow**，选择包含 MCP 改动的分支（通常是 `master`），再点击 **Run workflow**。工作流文件是 `.github/workflows/agent-mcp-build.yml`，只手动触发，不需要签名密钥或仓库写权限，不创建标签或发布 Release。
 
-桥接代码生成后，会在对应系统的 GitHub runner 上构建四种桌面版本，实际编译参数包含 `--flutter --mcp`：
+桥接代码生成后，会在对应系统的 GitHub runner 上构建五种桌面版本，实际编译参数包含 `--flutter --mcp`：
 
 | Artifact | 内容 |
 | --- | --- |
 | `rustdesk-mcp-windows-x64` | Windows x64 应用目录 ZIP；完整解压后运行 `rustdesk.exe` |
 | `rustdesk-mcp-linux-x64` | Ubuntu 22.04 环境构建的 Debian 包和应用目录 TAR.GZ |
+| `rustdesk-mcp-linux-arm64` | Ubuntu 22.04 ARM64 环境构建的 Debian 包和应用目录 TAR.GZ |
 | `rustdesk-mcp-macos-x64` | Intel Mac 的 `.app.zip` |
 | `rustdesk-mcp-macos-arm64` | Apple Silicon 的 `.app.zip`，最低 macOS 12.3 |
 
 等待目标平台任务成功后，在该次运行的 **Summary → Artifacts** 下载对应包。每份产物同时包含 `stdio.py`、本说明及 `COMMIT.txt`；`mcp-bridge` 只是构建中间文件。产物保留 14 天，可通过再次运行重新构建。
 
-这些是未进行发行签名/公证的测试包，不是正式签名安装器。Windows 包不附带上游发布流程额外下载的虚拟显示器和打印机驱动，也未启用 `vram`。Linux 运行仍需要系统图形/音频等依赖，不保证兼容比 Ubuntu 22.04 更老的发行版。macOS 首次打开可能需要按系统提示允许该应用；不要全局关闭系统安全保护。安装后仍需手动启用 MCP 服务并配置授权。
+这些是未进行发行签名/公证的测试包，不是正式签名安装器。Windows 包不附带上游发布流程额外下载的虚拟显示器和打印机驱动，也未启用 `vram`。Linux x64 与 ARM64 运行仍需要系统图形/音频等依赖，不保证兼容比 Ubuntu 22.04 更老的发行版；ARM64 使用项目上游采用的 `flutter-elinux` 构建路径。macOS 首次打开可能需要按系统提示允许该应用；不要全局关闭系统安全保护。安装后仍需手动启用 MCP 服务并配置授权。
 
-`Agent MCP protocol` 是协议测试，不生成桌面安装包；`Full Flutter CI`、`Flutter Nightly Build` 和标签发布工作流沿用上游构建，默认不包含 MCP，不应作为 MCP 产物下载入口。
+`Agent MCP protocol` 是自动协议与 OCR 检查，不生成桌面安装包；桌面产物只由手动触发的 `MCP desktop build` 生成。本 fork 已移除上游通用 CI、全量 Flutter、nightly、tag 和 playground 编译流程，避免一次推送触发多套不含 MCP 的重复构建。
 
 ### 内置私有服务器
 
 本 fork 的 MCP 构建会将 ID 服务器 `r5.ikanade.cn:21116`、中继 `r5.ikanade.cn:21117` 和公钥 `avD+qUiwBe013hPPKQjCO81ekJTDoqkxmxDXPkRMAe8=` 编译进客户端。这是公开的连接配置，不是服务端私钥或远程设备密码。
 
-采用教程的源码常量方案：在当前锁定的 `hbb_common` 上应用 `.github/patches/agent-mcp-server.diff`，修改 `RENDEZVOUS_SERVERS`、`RS_PUB_KEY`，并为 `custom-rendezvous-server`、`relay-server`、`key` 添加默认值。设置页读取的是配置选项而非编译常量，因此三项都提供默认配置，确保新配置的 ID、中继和 Key 输入框完整预填。不切换子模块分支，不修改上游发布工作流或 Actions 写权限。CI 会同时校验源码中的常量和设置默认值；macOS 隔离包还执行原生诊断命令验证 `built_in_server` 与 `default_server_options`。每份桌面产物附带 `SERVER-CONFIG.json`。
+采用教程的源码常量方案：在当前锁定的 `hbb_common` 上应用 `.github/patches/agent-mcp-server.diff`，修改 `RENDEZVOUS_SERVERS`、`RS_PUB_KEY`，并为 `custom-rendezvous-server`、`relay-server`、`key` 添加默认值。设置页读取的是配置选项而非编译常量，因此三项都提供默认配置，确保新配置的 ID、中继和 Key 输入框完整预填。不切换子模块分支，不启用上游发布流程或 Actions 写权限。构建工作流会同时校验源码中的常量和设置默认值；macOS 隔离包还执行原生诊断命令验证 `built_in_server` 与 `default_server_options`。每份桌面产物附带 `SERVER-CONFIG.json`。
 
 本地编译同一配置时，先执行以下命令，再运行带 `--mcp` 的构建。补丁只应用一次；`--check` 失败时先检查子模块版本和本地修改，不强行覆盖：
 
@@ -52,7 +53,7 @@ TCP 打洞和 WebRTC 信令使用所配置的自建 ID 服务器，不依赖 Rus
 
 当前尚未部署自建 STUN/TURN，因此不将 ID 服务的 `21116` 端口伪装成 STUN/TURN 服务。自动模式保留 TCP 打洞和 WebRTC 可直接到达的候选地址，跨 NAT 的 WebRTC 成功率可能受限，失败后回退 RustDesk 中继。后续部署自建 STUN/TURN 后，可通过 `ice-servers` 显式配置其服务地址；仅配置自建 TURN 也不会重新启用公共 STUN。已保存的显式 ICE 配置仍会被读取，升级已有配置时应移除其中的公共服务地址；被控端也需使用相同私服策略，才能避免它自身查询公共 STUN。
 
-这些是新配置的默认值，不强制覆盖用户已保存的服务器设置；仍需通过真实连接验证服务器可达性和公钥匹配。中继连接仍需 ID 服务器协调、远端在线及正常认证；全局强制中继开启时，中继失败不会退回点对点直连。隔离版只作为控制端，不启动被控端注册，不能以首页「就绪」作为验收标准。其他上游工作流及未应用补丁的本地构建保持原服务器配置与默认连接策略。已安装的旧包需重新构建后更新才能生效。
+这些是新配置的默认值，不强制覆盖用户已保存的服务器设置；仍需通过真实连接验证服务器可达性和公钥匹配。中继连接仍需 ID 服务器协调、远端在线及正常认证；全局强制中继开启时，中继失败不会退回点对点直连。隔离版只作为控制端，不启动被控端注册，不能以首页「就绪」作为验收标准。未应用补丁的本地构建保持原服务器配置与默认连接策略。已安装的旧包需重新构建后更新才能生效。
 
 ### 与正在使用的 macOS 版本隔离测试
 
