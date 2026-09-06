@@ -284,7 +284,10 @@ jobs:
           grep -Fq 'crate-type = ["cdylib"]' Cargo.toml
           export CARGO_INCREMENTAL=0
           cargo build --locked --lib --release --jobs "$CARGO_BUILD_JOBS" --features "$features"
-          test -s target/release/librustdesk.so
+          test -s target/release/liblibrustdesk.so || {
+            echo "::error::Missing or empty Cargo library: target/release/liblibrustdesk.so" >&2
+            exit 1
+          }
           sed -i 's/flutter build linux --release/flutter-elinux build linux --verbose/' build.py
           sed -i 's/x64\/release/arm64\/release/g' build.py
           grep -Fq "flutter-elinux build linux --verbose" build.py
