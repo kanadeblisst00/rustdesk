@@ -1,7 +1,7 @@
 diff --git a/src/config.rs b/src/config.rs
 --- a/src/config.rs
 +++ b/src/config.rs
-@@ -73,7 +73,11 @@ lazy_static::lazy_static! {
+@@ -73,7 +73,12 @@ lazy_static::lazy_static! {
      static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();
      static ref USER_DEFAULT_CONFIG: RwLock<(UserDefaultConfig, Instant)> = RwLock::new((UserDefaultConfig::load(), Instant::now()));
      pub static ref NEW_STORED_PEER_CONFIG: Mutex<HashSet<String>> = Default::default();
@@ -10,11 +10,12 @@ diff --git a/src/config.rs b/src/config.rs
 +        ("custom-rendezvous-server".to_owned(), "r5.ikanade.cn:21116".to_owned()),
 +        ("relay-server".to_owned(), "r5.ikanade.cn:21117".to_owned()),
 +        ("key".to_owned(), "avD+qUiwBe013hPPKQjCO81ekJTDoqkxmxDXPkRMAe8=".to_owned()),
++        ("force-always-relay".to_owned(), "Y".to_owned()),
 +    ]));
      pub static ref OVERWRITE_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
      pub static ref DEFAULT_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
      pub static ref OVERWRITE_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-@@ -114,8 +118,8 @@ const CHARS: &[char] = &[
+@@ -114,8 +119,8 @@ const CHARS: &[char] = &[
      'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
  ];
 
@@ -25,3 +26,63 @@ diff --git a/src/config.rs b/src/config.rs
 
  pub const RENDEZVOUS_PORT: i32 = 21116;
  pub const RELAY_PORT: i32 = 21117;
+diff --git a/src/webrtc.rs b/src/webrtc.rs
+--- a/src/webrtc.rs
++++ b/src/webrtc.rs
+@@ -146,16 +146,8 @@
+ /// unauthenticated peer can make a receiver hold. Kept at parity with TCP on purpose: one session
+ /// moves between both paths, so a transport-specific ceiling would kill it on the other one.
+ const MAX_RECV_MESSAGE: usize = crate::bytes_codec::MAX_FRAME_LENGTH;
+-// Four networks, not four names: webrtc-ice queries each URL from its own socket, so entries
+-// sharing a host buy no redundancy - the two this list used to carry failed together, in the same
+-// millisecond, on a peer whose route to that one host was down. Two anycast, two unicast; the 443
+-// entry is for networks that pass no other UDP port.
+-static DEFAULT_ICE_SERVERS: [&str; 4] = [
+-    "stun:stun.cloudflare.com:3478",
+-    "stun:stun.l.google.com:19302",
+-    "stun:stun.antisip.com:3478",
+-    "stun:stun.nextcloud.com:443",
+-];
++// Private builds only use explicitly configured ICE servers.
++static DEFAULT_ICE_SERVERS: [&str; 0] = [];
+
+ lazy_static::lazy_static! {
+     static ref SESSIONS: Arc::<Mutex<HashMap<String, WebRTCStream>>> = Default::default();
+@@ -524,7 +516,7 @@
+         }
+
+         // If there is no STUN (either TURN-only or empty config) → prepend defaults
+-        if !has_stun {
++        if !has_stun && !DEFAULT_ICE_SERVERS.is_empty() {
+             ice_servers.insert(
+                 0,
+                 RTCIceServer {
+@@ -1566,10 +1558,10 @@
+     // one process, so mutating it raced every peer connection the loopback tests were building.
+     #[test]
+     fn test_webrtc_ice_server_list() {
+-        assert_eq!(
+-            WebRTCStream::parse_ice_servers("")[0].urls[0],
+-            DEFAULT_ICE_SERVERS[0].to_string()
+-        );
++        assert!(DEFAULT_ICE_SERVERS.is_empty());
++        assert!(WebRTCStream::parse_ice_servers("").is_empty());
++        assert!(WebRTCStream::parse_ice_servers("sdf,stun:,turn://nocreds.example.com").is_empty());
++        assert!(WebRTCStream::default_stun_servers().is_empty());
+
+         // Unusable entries drop out of the list; the rest of the config still applies.
+         let parsed = WebRTCStream::parse_ice_servers(
+@@ -1579,10 +1571,10 @@
+         assert_eq!(parsed[1].urls[0], "turn:example.com:3478");
+         assert_eq!(parsed.len(), 2);
+
+-        // TURN-only config still gets the default STUN servers prepended.
++        // Explicit TURN must not silently add public STUN servers.
+         let turn_only = WebRTCStream::parse_ice_servers("turn://u:p@example.com:3478");
+-        assert_eq!(turn_only[0].urls[0], DEFAULT_ICE_SERVERS[0].to_string());
+-        assert_eq!(turn_only[1].urls[0], "turn:example.com:3478");
++        assert_eq!(turn_only.len(), 1);
++        assert_eq!(turn_only[0].urls[0], "turn:example.com:3478");
+     }
+
+     #[test]

@@ -1802,6 +1802,28 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
                   title: 'ID/Relay Server',
                   onTap: () => showServerSettings(gFFI.dialogManager, setState),
                 ),
+              if (!hideServer &&
+                  !bind.isIncomingOnly() &&
+                  bind.mainGetLocalOption(key: 'agent-mcp-supported') ==
+                      'Y') ...[
+                divider,
+                listTile(
+                  icon: Icons.alt_route,
+                  title: 'Always connect via relay',
+                  trailing: Switch(
+                    value: mainGetBoolOptionSync(kOptionForceAlwaysRelay),
+                    onChanged: locked || isOptionFixed(kOptionForceAlwaysRelay)
+                        ? null
+                        : (value) async {
+                            // An empty value would restore the embedded relay default.
+                            await bind.mainSetOption(
+                                key: kOptionForceAlwaysRelay,
+                                value: value ? 'Y' : 'N');
+                            if (mounted) setState(() {});
+                          },
+                  ),
+                ),
+              ],
               if (!hideProxy && !hideServer) divider,
               if (!hideProxy)
                 listTile(

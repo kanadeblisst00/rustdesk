@@ -95,6 +95,9 @@ pub mod helper;
 pub mod io_loop;
 pub mod screenshot;
 
+#[cfg(all(test, feature = "flutter"))]
+mod relay_policy_tests;
+
 pub const MILLI1: Duration = Duration::from_millis(1);
 pub const SEC30: Duration = Duration::from_secs(30);
 // Empirical restart reconnect grace window.
@@ -589,6 +592,10 @@ impl Client {
     /// Relay-only ICE can then gather nothing. WebSocket does not: it tunnels only the signaling
     /// and relay legs, so the offer keeps full ICE and direct is exactly what it is there for.
     fn should_create_webrtc_offerer(interface: &impl Interface) -> bool {
+        // The global relay policy selects the configured RustDesk relay, including with TURN set.
+        if Config::get_bool_option("force-always-relay") {
+            return false;
+        }
         if !crate::get_webrtc_enabled() {
             return false;
         }
@@ -860,7 +867,9 @@ impl Client {
             .and_then(|g| g.stream())
             .map(|stream| stream.local_endpoint().to_owned())
             .unwrap_or_default();
-        let allow_tcp_punch = tcp_punch_allowed() && request_allows_tcp_punch(&webrtc_sdp_offer);
+        let allow_tcp_punch = !interface.is_force_relay()
+            && tcp_punch_allowed()
+            && request_allows_tcp_punch(&webrtc_sdp_offer);
         // Every direct transport this round carries, not one of them: a round can carry several
         // at once (a NAT port and an offer and a v6 address), and since the TCP punch became a
         // switch it can carry none — a single name had to misreport both. `relay` is not a punch,
@@ -2776,6 +2785,7 @@ impl LoginConfigHandler {
             config::option2bool("force-always-relay", &self.get_option("force-always-relay"))
                 || force_relay;
         self.policy_relay = self.peer_relay || Config::is_proxy();
+        self.policy_relay |= Config::get_bool_option("force-always-relay");
         self.force_relay = self.policy_relay || use_ws();
         if let Some((real_id, server, key)) = &self.other_server {
             let other_server_key = self.get_option("other-server-key");
