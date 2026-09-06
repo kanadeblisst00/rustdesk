@@ -7,6 +7,8 @@ use hbb_common::{
 use image::{imageops, ImageBuffer, ImageOutputFormat, Rgba};
 use std::io::Cursor;
 
+mod hotkey;
+
 pub(super) struct PendingScreenshot {
     pub id: String,
     pub result: Option<Result<Vec<u8>, String>>,
@@ -396,9 +398,13 @@ pub(super) fn input(
             } else {
                 event.set_control_key(control(&key).ok_or("Unknown key")?);
             }
-            let mut msg = Message::new();
-            msg.set_key_event(event);
-            session::send(s, Data::Message(msg))?;
+            if !event.modifiers.is_empty() && s.peer_platform() == "Windows" {
+                hotkey::send(s, event)?;
+            } else {
+                let mut msg = Message::new();
+                msg.set_key_event(event);
+                session::send(s, Data::Message(msg))?;
+            }
         }
         _ => return Err("Unsupported desktop action".into()),
     }

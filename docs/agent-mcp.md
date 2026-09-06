@@ -138,6 +138,8 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 `keyboard_hotkey` 示例：`{"session":"<UUID>","keys":["Ctrl","c"]}`。`execute_actions` 最多 20 个输入动作，按顺序发送，失败即停，没有回滚。返回 `queued:true` 只代表 RustDesk 接受了请求，不代表远端已经执行成功。
 
+Windows 组合热键显式按下修饰键和主键，先释放主键，再反向释放修饰键；中途失败也会尝试释放已经排队按下的键。字母/数字主键使用 Windows 虚拟按键编码，避免输入法或字符映射把 `Meta+r` 变成单独的 Windows 键。单键与其他平台保留原来的输入路径。
+
 ### 终端
 
 以 `kind:"terminal"` 连接，在认证完成后调用 `terminal_open`，例如 `terminal_id:1, rows:24, cols:80`。等待 `terminal_response` 的 `opened` 且 `success:true`，再发送 `terminal_input`。文本按原样发送，提交 shell 命令通常需要末尾 `\r`；终端操作可能执行任意远端命令，必须获得用户授权。
@@ -181,6 +183,8 @@ uv run --with mcp==1.28.1 --python 3.12 python tools/mcp/sdk_interop.py libs/age
 原生验证：生成完整桥接后运行 `cargo check --locked --features mcp --lib`，并用 `cargo check --locked --features flutter --lib` 检查 feature-off 路径。Flutter 对新增设置页运行静态分析。
 
 可见会话回归：`cargo test --locked --features mcp --lib agent_mcp::session::tests`；macOS 隔离构建改用 `--features mcp-isolated`。覆盖桌面/文件/终端、普通/隔离 URL scheme、中继参数和主窗口不可用时立即失败；这些本地测试不连接真实设备。
+
+热键回归：`cargo test --locked --features mcp --lib agent_mcp::desktop::hotkey::tests`，覆盖 `Meta+r`、`Ctrl+c`、`Ctrl+Shift+c`、`Alt+Tab`、单键、其他平台及部分失败后的按键释放。测试检查真实输入入口产生的协议消息，不注入本地键盘。真实 Windows 验收还需确认 `Meta+r` 打开“运行”窗口，再用 Escape 关闭，不能仅以 `queued:true` 或开始菜单出现判定成功。
 
 默认中继策略回归：运行 `cargo test --locked --features mcp --lib client::relay_policy_tests`。测试在独立子进程中覆盖五种会话类型、显式中继与全局策略的组合，并用 loopback 模拟服务器返回直连地址和中继拒绝，确认不会发起直连或回退直连；不连接真实远端。
 
