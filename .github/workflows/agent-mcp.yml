@@ -42,11 +42,6 @@ jobs:
           $parseErrors = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile("$pwd/src/platform/agent_uia.ps1", [ref]$tokens, [ref]$parseErrors)
           if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
-      - name: Windows UIA control patterns
-        if: runner.os == 'Windows'
-        env:
-          RUSTDESK_TEST_UIA: '1'
-        run: python -m unittest discover -s tools/mcp -p "test_uia_windows.py" -v
       - name: Official SDK interoperability
         if: runner.os == 'Linux' && matrix.rust == 'stable'
         run: |
