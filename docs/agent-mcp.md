@@ -5,7 +5,7 @@
 ## 构建与启用
 
 1. 按项目 Flutter 构建流程安装 Rust、Flutter、原生依赖和生成桥接代码，初始化 Git 子模块。GitHub 多平台版本及依赖以 `.github/workflows/agent-mcp-build.yml` 为准；F-Droid 复用版本常量位于 `.github/build-versions.yml`。
-2. 使用 `python3 build.py --flutter --mcp` 构建桌面应用；可用 `--print-features` 检查参数。手动 Rust 构建使用 `cargo build --locked --release --features mcp --lib`，再按平台 Flutter 流程打包该库。
+2. 使用 `python3 build.py --flutter --mcp` 构建桌面应用；可用 `--print-features` 检查参数。手动 Rust 构建使用 `cargo build --locked --release --features mcp --lib`（macOS 还需以相同 features 构建 `service` 辅助程序）后，仍需通过 `build.py --flutter --mcp --skip-cargo` 完成对应平台身份设置和打包校验，不能直接配上官方 Flutter 外壳。
 3. 启动构建后的 RustDesk，在「设置 → 安全」启用「Enable MCP server / 启用 MCP 服务」。普通发行版未包含 `mcp` feature 时不显示此设置。
 4. 建议先配置设备白名单和只读模式，再点击「复制 MCP 配置」。启动成功的状态应为 `Listening on http://127.0.0.1:59940/mcp`。
 
@@ -56,9 +56,29 @@ TCP 打洞和 WebRTC 信令使用所配置的自建 ID 服务器，不依赖 Rus
 
 这些是新配置的默认值，不强制覆盖用户已保存的服务器设置；仍需通过真实连接验证服务器可达性和公钥匹配。中继连接仍需 ID 服务器协调、远端在线及正常认证；全局强制中继开启时，中继失败不会退回点对点直连。隔离版只作为控制端，不启动被控端注册，不能以首页「就绪」作为验收标准。未应用补丁的本地构建保持原服务器配置与默认连接策略。已安装的旧包需重新构建后更新才能生效。
 
+### 与官方版同时安装
+
+普通 `--flutter --mcp` 构建现在默认使用独立的 **RustDeskMCP** 身份，保留主控、被控和系统服务功能。无需勾选 `isolated_macos`；未启用 `mcp` feature 的构建仍使用原身份。
+
+| 平台 | 应用与安装位置 | 配置与系统标识 |
+| --- | --- | --- |
+| macOS | `/Applications/RustDeskMCP.app`，主程序 `RustDeskMCP` | Bundle ID `com.carriez.RustDeskMCP`；配置 `~/Library/Preferences/com.carriez.RustDeskMCP`；launchd 作业 `com.carriez.RustDeskMCP_service` / `com.carriez.RustDeskMCP_server` |
+| Windows | `%ProgramFiles%\RustDeskMCP\RustDeskMCP.exe`，独立开始菜单和卸载项 | 服务 `RustDeskMCP`；注册表 `Software\Microsoft\Windows\CurrentVersion\Uninstall\RustDeskMCP`；配置 `%APPDATA%\RustDeskMCP\config` |
+| Linux | Debian 包 `rustdesk-mcp`；命令 `/usr/bin/rustdeskmcp`；应用目录 `/usr/share/rustdeskmcp` | 服务 `rustdeskmcp.service`；GTK ID `com.carriez.RustDeskMCP`；配置 `~/.config/rustdeskmcp` |
+
+三平台 URL scheme 均为 `rustdeskmcp://`，日志和 IPC 也使用 `RustDeskMCP` 名称。Windows 自解压目录和隐私模式辅助进程独立；卸载 MCP 应用不会自动删除两版可能共享的显示/打印驱动或证书。Linux 桌面入口、图标、服务文件和卸载清理只属于 MCP 包，不声明替换或冲突官方 `rustdesk` 包。
+
+首次启动生成独立设备 ID，不自动导入官方版或旧的同名 MCP 包的配置、密码、账户和令牌。请在新应用内重新设置 MCP 并复制新的连接配置；macOS 屏幕录制、辅助功能等权限也需为新 Bundle 单独授权。
+
+MCP HTTP 默认仍为 `127.0.0.1:59940`。可选的 IP 直连监听默认改为 TCP `59942`（连接 MCP 被控端时显式填写 `IP:59942`），局域网发现监听使用 UDP `59943`。MCP 主控同时查询官方和 MCP 发现端口；官方主控不会自动发现 MCP 专用端口，仍可使用设备 ID 连接。服务器的 ID/中继端口和远控协议保持兼容；两版同时启用时不要把自定义本地监听端口配置为相同值。
+
+官方更新源不会更新 MCP 应用；升级时重新构建并安装 MCP 包。当前 MCP Linux 产物为 Debian 包和 TAR.GZ 应用目录，支持 x64、ARM64；`--package`、`--drm` 及 Arch/RPM 打包入口会明确拒绝 MCP 参数，避免产出覆盖官方版的混合安装包。
+
+打包会执行 `--mcp-identity-info` 校验原生身份、配置/IPC 路径和端口，防止 `--skip-cargo` 混入普通库。macOS 同时修改主程序文件名、Info.plist、URL scheme 并重新签名，再输出 `RustDeskMCP.app`；保持 Xcode 各依赖 target 的产品名称，避免全局覆盖 PRODUCT_NAME 使 framework 产物冲突。Windows/Linux 使用构建子进程环境 `RUSTDESK_MCP_BUILD=1` 设置 Flutter 外壳身份，不改变后续普通构建的环境。切换构建身份时应清理旧的 Flutter 构建目录，打包校验会拒绝残留的官方可执行文件。
+
 ### 与正在使用的 macOS 版本隔离测试
 
-Actions 手动运行时勾选 `isolated_macos`，或在 Mac 上执行 `python3 build.py --flutter --mcp --mcp-isolated`，会生成独立的 `RustDeskMCPTest.app`。此开关仅支持 macOS，普通 `--mcp` 构建不改变身份。
+Actions 手动运行时勾选 `isolated_macos`，或在 Mac 上执行 `python3 build.py --flutter --mcp --mcp-isolated`，会生成独立的 `RustDeskMCPTest.app`。此开关仅支持 macOS；它与普通 `RustDeskMCP` 并存构建不同，仅用于控制端隔离测试。
 
 测试版的 Bundle ID 为 `cn.ikanade.RustDeskMCPTest`，Rust 配置位于 `~/Library/Preferences/cn.ikanade.RustDeskMCPTest`，日志位于 `~/Library/Logs/RustDeskMCPTest`，IPC 使用 `/tmp/RustDeskMCPTest-<uid>/`，URL scheme 为 `rustdeskmcptest`，MCP 地址为 `http://127.0.0.1:59941/mcp`。Flutter 存储也使用独立 Bundle ID，不导入普通 RustDesk 的配置、账户或令牌。打包时执行原生 `--mcp-isolation-info` 检查身份与路径，不允许仅重命名普通安装包冒充隔离版。
 

@@ -3,6 +3,7 @@
 import os
 import glob
 import contextlib
+from tools.mcp import package_desktop as mcp_package
 import pathlib
 import platform
 import zipfile
@@ -327,6 +328,12 @@ def get_features(args):
     if args.mcp:
         if not args.flutter:
             raise Exception('--mcp requires --flutter')
+        if args.drm:
+            raise Exception('--mcp cannot be combined with --drm')
+        if args.package:
+            raise Exception('--mcp requires a complete build, not --package')
+        if not windows and not osx and linux_packaging_branch() != 'deb':
+            raise Exception('MCP Linux packaging currently requires the Debian build path')
         features.append('mcp')
     if getattr(args, 'mcp_isolated', False):
         if not osx:
@@ -710,7 +717,24 @@ def retarget_control_to_drm_variant():
         f.write(body)
 
 
+def build_flutter_mcp_deb(version, features):
+    if 'drm' in features.split(','):
+        raise Exception('MCP co-installable packages do not support --drm')
+    if not skip_cargo:
+        system2(f'cargo build --locked --features {features} --lib --release')
+        ffi_bindgen_function_refactor()
+    # Keep this command compatible with the pinned flutter-elinux ARM64 workflow.
+    command = 'flutter build linux --release'.split()
+    mcp_package.flutter_build(command, cwd='flutter')
+    bundle = os.path.join('flutter', flutter_build_dir)
+    mcp_package.package_linux(bundle, f'rustdesk-mcp-{version}.deb', version,
+                              get_deb_arch(), get_deb_extra_depends())
+
+
 def build_flutter_deb(version, features):
+    if 'mcp' in features.split(','):
+        return build_flutter_mcp_deb(version, features)
+
     if not skip_cargo:
         system2(f'cargo build --locked --features {features} --lib --release')
         ffi_bindgen_function_refactor()
@@ -921,12 +945,17 @@ def build_flutter_dmg(version, features):
     isolated_settings = ''
     if 'mcp-isolated' in features.split(','):
         isolated_settings = 'FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER=cn.ikanade.RustDeskMCPTest '
+    elif 'mcp' in features.split(','):
+        isolated_settings = f'FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER={mcp_package.BUNDLE_ID} '
     system2(
         f'{isolated_settings}FLUTTER_XCODE_ARCHS={mac_arch} FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES flutter build macos --release')
     system2('cp -rf ../target/release/service ./build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/')
-    if isolated_settings:
+    if 'mcp-isolated' in features.split(','):
         subprocess.run([sys.executable, os.path.join(REPO_ROOT, 'tools/mcp/package_macos_isolated.py'),
                         'build/macos/Build/Products/Release/RustDesk.app'], check=True)
+    elif 'mcp' in features.split(','):
+        subprocess.run([sys.executable, os.path.join(REPO_ROOT, 'tools/mcp/package_desktop.py'),
+                        'macos', 'build/macos/Build/Products/Release/RustDesk.app'], check=True)
     '''
     system2(
         "create-dmg --volname \"RustDesk Installer\" --window-pos 200 120 --window-size 800 400 --icon-size 100 --app-drop-link 600 185 --icon RustDesk.app 200 190 --hide-extension RustDesk.app rustdesk.dmg ./build/macos/Build/Products/Release/RustDesk.app")
@@ -953,16 +982,26 @@ def build_flutter_windows(version, features, skip_portable_pack):
             print("cargo build failed, please check rust source code.")
             exit(-1)
     os.chdir('flutter')
-    system2('flutter build windows --release')
+    if 'mcp' in features.split(','):
+        mcp_package.flutter_build(['flutter', 'build', 'windows', '--release'])
+    else:
+        system2('flutter build windows --release')
     os.chdir('..')
     shutil.copy2('target/release/deps/dylib_virtual_display.dll',
                  flutter_build_dir_2)
+    mcp = 'mcp' in features.split(',')
+    exe_name = 'rustdeskmcp.exe' if mcp else 'rustdesk.exe'
+    if mcp:
+        if os.path.exists(os.path.join(flutter_build_dir_2, 'rustdesk.exe')):
+            raise Exception('Stale stock executable in MCP bundle; clean the Flutter build first')
+        mcp_package.verify_binary(os.path.join(flutter_build_dir_2, exe_name))
     if skip_portable_pack:
         return
     os.chdir('libs/portable')
     system2('pip3 install -r requirements.txt')
     system2(
-        f'python3 ./generate.py -f ../../{flutter_build_dir_2} -o . -e ../../{flutter_build_dir_2}/rustdesk.exe')
+        f'python3 ./generate.py -f ../../{flutter_build_dir_2} -o . -e ../../{flutter_build_dir_2}/{exe_name}'
+        + (' --mcp' if mcp else ''))
     os.chdir('../..')
     if os.path.exists('./rustdesk_portable.exe'):
         os.replace('./target/release/rustdesk-portable-packer.exe',

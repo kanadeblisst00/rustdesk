@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+    install -m 644 /usr/share/rustdeskmcp/files/systemd/rustdeskmcp.service /usr/lib/systemd/system/rustdeskmcp.service
+    systemctl daemon-reload
+    systemctl enable rustdeskmcp.service
+    systemctl start rustdeskmcp.service
+fi

@@ -306,6 +306,10 @@ fn update_daemon_agent(agent_plist_file: String, update_source_dir: String, sync
 }
 
 fn correct_app_name(s: &str) -> String {
+    #[cfg(all(feature = "mcp", not(feature = "mcp-isolated")))]
+    if cfg!(feature = "mcp") {
+        return crate::agent_mcp::identity::macos_template(s);
+    }
     let mut s = s.to_owned();
     if let Some(bundleid) = get_bundle_id() {
         s = s.replace("com.carriez.rustdesk", &bundleid);
@@ -1014,6 +1018,9 @@ end run
 }
 
 pub fn update_from_dmg(dmg_path: &str) -> ResultType<()> {
+    if cfg!(feature = "mcp") {
+        bail!("Update RustDeskMCP using an MCP build");
+    }
     if cfg!(feature = "mcp-isolated") {
         bail!("Application replacement is disabled in RustDeskMCPTest");
     }

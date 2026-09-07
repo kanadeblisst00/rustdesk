@@ -10,8 +10,8 @@ spec.loader.exec_module(build)
 
 
 class BuildFlagTest(unittest.TestCase):
-    def test_macos_packaging_is_only_changed_for_isolated_feature(self):
-        for features, isolated in [('flutter,mcp', False), ('flutter,mcp,mcp-isolated', True)]:
+    def test_macos_packaging_selects_stock_mcp_and_test_identities(self):
+        for features, isolated in [('flutter', False), ('flutter,mcp', False), ('flutter,mcp,mcp-isolated', True)]:
             with self.subTest(features=features), patch.object(build, 'skip_cargo', True), \
                     patch.object(build.os, 'chdir'), patch.object(build, 'system2') as run, \
                     patch.object(build.subprocess, 'run') as package:
@@ -19,9 +19,52 @@ class BuildFlagTest(unittest.TestCase):
                 commands = [call.args[0] for call in run.call_args_list]
                 flutter_command = next(command for command in commands if 'flutter build macos' in command)
                 self.assertEqual('cn.ikanade.RustDeskMCPTest' in flutter_command, isolated)
-                self.assertEqual(package.called, isolated)
+                self.assertEqual(package.called, 'mcp' in features.split(','))
                 if isolated:
                     self.assertTrue(package.call_args.args[0][1].endswith('package_macos_isolated.py'))
+                elif features == 'flutter,mcp':
+                    self.assertIn('com.carriez.RustDeskMCP', flutter_command)
+                    self.assertNotIn('FLUTTER_XCODE_PRODUCT_NAME', flutter_command)
+                    self.assertTrue(package.call_args.args[0][1].endswith('package_desktop.py'))
+
+    def test_mcp_linux_uses_separate_packaging_for_both_architectures(self):
+        for arch, directory in [('amd64', 'x64'), ('arm64', 'arm64')]:
+            with self.subTest(arch=arch), patch.object(build, 'skip_cargo', True), \
+                    patch.object(build, 'flutter_build_dir', f'build/linux/{directory}/release/bundle/'), \
+                    patch.object(build, 'get_deb_arch', return_value=arch), \
+                    patch.object(build.mcp_package, 'flutter_build') as flutter, \
+                    patch.object(build.mcp_package, 'package_linux') as package:
+                build.build_flutter_deb('1.5.0', 'flutter,mcp')
+                flutter.assert_called_once_with(['flutter', 'build', 'linux', '--release'], cwd='flutter')
+                self.assertEqual(package.call_args.args[:4], (
+                    f'flutter/build/linux/{directory}/release/bundle/',
+                    'rustdesk-mcp-1.5.0.deb', '1.5.0', arch))
+
+    def test_windows_mcp_renames_payload_and_enables_portable_identity(self):
+        for features, mcp in [('flutter', False), ('flutter,mcp', True)]:
+            with self.subTest(features=features), patch.object(build, 'skip_cargo', True), \
+                    patch.object(build.os, 'chdir'), patch.object(build.os, 'rename'), \
+                    patch.object(build.os.path, 'exists', return_value=False), \
+                    patch.object(build.shutil, 'copy2'), patch.object(build, 'system2') as run, \
+                    patch.object(build.mcp_package, 'flutter_build') as flutter, \
+                    patch.object(build.mcp_package, 'verify_binary') as verify:
+                build.build_flutter_windows('test', features, False)
+                command = next(c.args[0] for c in run.call_args_list if 'generate.py' in c.args[0])
+                self.assertEqual('/rustdeskmcp.exe' in command, mcp)
+                self.assertEqual(command.endswith(' --mcp'), mcp)
+                self.assertEqual(flutter.called, mcp)
+                self.assertEqual(verify.called, mcp)
+
+    def test_mcp_rejects_packaging_paths_that_would_overwrite_stock(self):
+        for flags in [['--drm'], ['--package', 'bundle']]:
+            args = build.make_parser().parse_args(['--flutter', '--mcp'] + flags)
+            with self.assertRaisesRegex(Exception, '--mcp'):
+                build.get_features(args)
+        with patch.object(build, 'windows', False), patch.object(build, 'osx', False), \
+                patch.object(build, 'linux_packaging_branch', return_value='pacman'):
+            args = build.make_parser().parse_args(['--flutter', '--mcp'])
+            with self.assertRaisesRegex(Exception, 'Debian'):
+                build.get_features(args)
 
     def test_isolated_mcp_requires_macos_and_mcp(self):
         with patch.object(build, 'osx', False):

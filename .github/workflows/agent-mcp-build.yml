@@ -306,31 +306,33 @@ jobs:
       - name: Package Linux bundle and Debian package
         if: matrix.platform == 'linux-x64'
         run: |
-          test -s flutter/build/linux/x64/release/bundle/rustdesk
+          test -s flutter/build/linux/x64/release/bundle/rustdeskmcp
           test -s flutter/build/linux/x64/release/bundle/lib/librustdesk.so
           mkdir -p dist
           tar -czf dist/rustdesk-mcp-linux-x64.tar.gz -C flutter/build/linux/x64/release bundle
-          cp rustdesk-*.deb dist/
+          cp rustdesk-mcp-*.deb dist/
       - name: Package Linux ARM64 bundle and Debian package
         if: matrix.platform == 'linux-arm64'
         run: |
-          test -s flutter/build/linux/arm64/release/bundle/rustdesk
+          test -s flutter/build/linux/arm64/release/bundle/rustdeskmcp
           test -s flutter/build/linux/arm64/release/bundle/lib/librustdesk.so
           mkdir -p dist
           tar -czf dist/rustdesk-mcp-linux-arm64.tar.gz -C flutter/build/linux/arm64/release bundle
-          cp rustdesk-*.deb dist/
+          cp rustdesk-mcp-*.deb dist/
       - name: Package macOS application with symlinks preserved
         if: runner.os == 'macOS'
         env:
           ISOLATED_MACOS: ${{ inputs.isolated_macos }}
         run: |
-          app=flutter/build/macos/Build/Products/Release/RustDesk.app
+          app=flutter/build/macos/Build/Products/Release/RustDeskMCP.app
+          binary=RustDeskMCP
           if [ "$ISOLATED_MACOS" = "true" ]; then
             app=flutter/build/macos/Build/Products/Release/RustDeskMCPTest.app
+            binary=RustDesk
             "$app/Contents/MacOS/RustDesk" --mcp-isolation-info > "$RUNNER_TEMP/mcp-native-info.json"
             python tools/mcp/verify_server_config.py --native-info "$RUNNER_TEMP/mcp-native-info.json"
           fi
-          test -s "$app/Contents/MacOS/RustDesk"
+          test -s "$app/Contents/MacOS/$binary"
           test -s "$app/Contents/MacOS/service"
           test -s "$app/Contents/Frameworks/liblibrustdesk.dylib"
           mkdir -p dist

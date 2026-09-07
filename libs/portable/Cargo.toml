@@ -8,6 +8,9 @@ description = "RustDesk Remote Desktop"
 
 build = "build.rs"
 
+[features]
+mcp = []
+
 [dependencies]
 brotli = "3.4"
 dirs = "5.0"
