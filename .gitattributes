@@ -1,1 +1,2 @@
 * text=auto
+.github/patches/*.diff text eol=lf
