@@ -1312,7 +1312,25 @@ fn get_subkey(name: &str, wow: bool) -> String {
     }
 }
 
+#[cfg(feature = "mcp")]
+fn get_mcp_install_subkey() -> String {
+    let app_name = crate::get_app_name();
+    for subkey in [
+        format!("{HKLM_PREFIX}Software\\{app_name}\\InstallState\\{app_name}"),
+        get_subkey(&app_name, true),
+    ] {
+        if !get_reg_of(&subkey, "InstallLocation").is_empty() {
+            return subkey;
+        }
+    }
+    get_subkey(&app_name, false)
+}
+
 fn get_valid_subkey() -> String {
+    #[cfg(feature = "mcp")]
+    if cfg!(feature = "mcp") {
+        return get_mcp_install_subkey();
+    }
     let app_name = crate::get_app_name();
     let subkey = format!("{HKLM_PREFIX}Software\\{app_name}\\InstallState\\{app_name}");
     if !get_reg_of(&subkey, "InstallLocation").is_empty() {
@@ -1835,8 +1853,10 @@ fn get_uninstall(kill_self: bool, uninstall_printer: bool) -> ResultType<String>
     let mut uninstall_printer_cmd = "".to_string();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_path) = exe.to_str() {
-            uninstall_cert_cmd = format!("\"{}\" --uninstall-cert", exe_path);
-            if uninstall_printer {
+            if !cfg!(feature = "mcp") {
+                uninstall_cert_cmd = format!("\"{}\" --uninstall-cert", exe_path);
+            }
+            if uninstall_printer && !cfg!(feature = "mcp") {
                 uninstall_printer_cmd = format!("\"{}\" --uninstall-remote-printer", &exe_path);
             }
         }
@@ -4150,6 +4170,9 @@ impl Drop for WallPaperRemover {
 }
 
 fn get_uninstall_amyuni_idd() -> String {
+    if cfg!(feature = "mcp") {
+        return String::new();
+    }
     match std::env::current_exe() {
         Ok(path) => format!("\"{}\" --uninstall-amyuni-idd", path.to_str().unwrap_or("")),
         Err(e) => {

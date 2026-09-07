@@ -9,6 +9,10 @@ fn main() {
                 winapi::um::winnt::SUBLANG_ENGLISH_US,
             ))
             .set_manifest_file("../../res/manifest.xml");
+        #[cfg(feature = "mcp")]
+        res.set("ProductName", "RustDeskMCP")
+            .set("OriginalFilename", "rustdeskmcp.exe")
+            .set("FileDescription", "RustDesk MCP Remote Desktop");
         match res.compile() {
             Err(e) => {
                 write!(std::io::stderr(), "{}", e).unwrap();

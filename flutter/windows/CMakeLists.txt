@@ -5,6 +5,10 @@ project(rustdesk LANGUAGES CXX)
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "rustdesk")
+if("$ENV{RUSTDESK_MCP_BUILD}" STREQUAL "1")
+  set(BINARY_NAME "rustdeskmcp")
+  add_definitions(-DRUSTDESK_MCP_BUILD)
+endif()
 
 # Explicitly opt into modern CMake behaviors to avoid warnings with recent
 # versions of CMake.

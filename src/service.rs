@@ -6,6 +6,8 @@ fn main() {}
 
 #[cfg(all(target_os = "macos", not(feature = "mcp-isolated")))]
 fn main() {
+    #[cfg(feature = "mcp")]
+    crate::common::load_custom_client();
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "--write-plists" {
         if let Err(e) = librustdesk::platform::write_plists() {

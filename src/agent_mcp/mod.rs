@@ -1,4 +1,6 @@
 mod desktop;
+#[cfg(not(feature = "mcp-isolated"))]
+pub(crate) mod identity;
 #[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
 pub(crate) mod isolated;
 mod session;

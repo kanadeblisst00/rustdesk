@@ -8,6 +8,11 @@ set(BINARY_NAME "rustdesk")
 # The unique GTK application identifier for this application. See:
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
 set(APPLICATION_ID "com.carriez.flutter_hbb")
+if("$ENV{RUSTDESK_MCP_BUILD}" STREQUAL "1")
+  set(BINARY_NAME "rustdeskmcp")
+  set(APPLICATION_ID "com.carriez.RustDeskMCP")
+  add_definitions(-DRUSTDESK_MCP_BUILD)
+endif()
 
 # Explicitly opt into modern CMake behaviors to avoid warnings with recent
 # versions of CMake.

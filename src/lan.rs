@@ -25,7 +25,16 @@ type Message = RendezvousMessage;
 
 #[cfg(not(target_os = "ios"))]
 pub(super) fn start_listening() -> ResultType<()> {
+    #[cfg(not(all(
+        feature = "mcp",
+        not(any(feature = "mcp-isolated", target_os = "android", target_os = "ios"))
+    )))]
     let addr = SocketAddr::from(([0, 0, 0, 0], get_broadcast_port()));
+    #[cfg(all(
+        feature = "mcp",
+        not(any(feature = "mcp-isolated", target_os = "android", target_os = "ios"))
+    ))]
+    let addr = SocketAddr::from(([0, 0, 0, 0], crate::agent_mcp::identity::LAN_PORT));
     let socket = std::net::UdpSocket::bind(addr)?;
     socket.set_read_timeout(Some(std::time::Duration::from_millis(1000)))?;
     log::info!("lan discovery listener started");
@@ -213,6 +222,14 @@ fn send_query() -> ResultType<Vec<UdpSocket>> {
     let maddr = SocketAddr::from(([255, 255, 255, 255], get_broadcast_port()));
     for socket in &sockets {
         allow_err!(socket.send_to(&out, maddr));
+        #[cfg(all(
+        feature = "mcp",
+        not(any(feature = "mcp-isolated", target_os = "android", target_os = "ios"))
+    ))]
+        allow_err!(socket.send_to(
+            &out,
+            SocketAddr::from(([255, 255, 255, 255], crate::agent_mcp::identity::LAN_PORT)),
+        ));
     }
     log::info!("discover ping sent");
     Ok(sockets)

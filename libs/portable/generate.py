@@ -84,11 +84,13 @@ def write_app_metadata(output_folder: str):
         f.write(f"timestamp = {int(datetime.datetime.now().timestamp() * 1000)}\n")
     print(f"App metadata has been written to {output_path}")
 
-def build_portable(output_folder: str, target: str):
+def build_portable(output_folder: str, target: str, mcp=False):
     current_dir = os.getcwd()
     try:
         os.chdir(output_folder)
         cmd = ["cargo", "build", "--locked", "--release"]
+        if mcp:
+            cmd.extend(["--features", "mcp"])
         if target:
             cmd.extend(["--target", target])
         subprocess.run(cmd, check=True)
@@ -119,6 +121,8 @@ if __name__ == '__main__':
                       default=False,
                       help="omit the executable from the blob, for a template whose "
                            "executable ships in the package instead")
+    parser.add_option("--mcp", action="store_true", default=False,
+                      help="build the RustDeskMCP portable wrapper")
     (options, args) = parser.parse_args()
     folder = options.folder or './rustdesk'
     output_folder = os.path.abspath(options.output_folder or './')
@@ -152,4 +156,4 @@ if __name__ == '__main__':
     else:
         write_package_metadata(md5_table, output_folder, exe)
         write_app_metadata(output_folder)
-        build_portable(output_folder, options.target)
+        build_portable(output_folder, options.target, mcp=options.mcp)

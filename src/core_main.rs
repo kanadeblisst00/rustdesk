@@ -33,6 +33,10 @@ pub fn core_main() -> Option<Vec<String>> {
         return None;
     }
     crate::load_custom_client();
+    #[cfg(all(feature = "mcp", not(feature = "mcp-isolated")))]
+    if crate::agent_mcp::identity::report_requested() {
+        return None;
+    }
     #[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
     if !crate::agent_mcp::isolated::allow_launch() {
         return None;
@@ -197,13 +201,14 @@ pub fn core_main() -> Option<Vec<String>> {
         return None;
     }
     if args.is_empty() || crate::common::is_empty_uni_link(&args[0]) {
-        #[cfg(all(target_os = "macos", not(feature = "mcp-isolated")))]
+        #[cfg(all(target_os = "macos", not(feature = "mcp")))]
         {
             crate::platform::macos::try_remove_temp_update_dir(None);
         }
 
         #[cfg(windows)]
         {
+            #[cfg(not(feature = "mcp"))]
             crate::platform::try_remove_temp_update_files();
             hbb_common::config::PeerConfig::preload_peers();
         }

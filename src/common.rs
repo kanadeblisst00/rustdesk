@@ -1009,6 +1009,9 @@ pub fn check_software_update() {
 // Because the url is always `https://api.rustdesk.com/version/latest`.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+    if cfg!(feature = "mcp") {
+        bail!("Update RustDeskMCP using an MCP build");
+    }
     let (request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
     let proxy_conf = Config::get_socks();
@@ -2224,6 +2227,13 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
 }
 
 pub fn load_custom_client() {
+    #[cfg(all(
+        feature = "mcp",
+        not(any(feature = "mcp-isolated", target_os = "android", target_os = "ios"))
+    ))]
+    if crate::agent_mcp::identity::initialize_device() {
+        return;
+    }
     #[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
     if crate::agent_mcp::isolated::initialize() {
         return;
@@ -2326,6 +2336,13 @@ pub fn get_dst_align_rgba() -> usize {
 }
 
 pub fn read_custom_client(config: &str) {
+    #[cfg(all(
+        feature = "mcp",
+        not(any(feature = "mcp-isolated", target_os = "android", target_os = "ios"))
+    ))]
+    if crate::agent_mcp::identity::initialize() {
+        return;
+    }
     #[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
     if crate::agent_mcp::isolated::initialize() {
         return;
