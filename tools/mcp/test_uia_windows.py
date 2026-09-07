@@ -6,6 +6,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import unittest
 
 
@@ -72,7 +73,14 @@ class WindowsUiaTests(unittest.TestCase):
         return result["elements"]
 
     def element(self, automation_id):
-        return next(e for e in self.tree() if e["automation_id"] == automation_id)
+        deadline = time.monotonic() + 5
+        while True:
+            element = next((e for e in self.tree() if e["automation_id"] == automation_id), None)
+            if element is not None:
+                return element
+            if time.monotonic() >= deadline:
+                self.fail(f"UIA element did not appear: {automation_id}")
+            time.sleep(0.1)
 
     def test_invoke_value_toggle_and_stale_identity(self):
         button = self.element("uia_button")
