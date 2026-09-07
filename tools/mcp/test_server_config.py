@@ -72,8 +72,8 @@ class ServerConfigTest(unittest.TestCase):
             source.parent.mkdir()
             source.write_bytes(original)
             source.with_name("webrtc.rs").write_bytes(original_webrtc)
-            subprocess.run(["git", "apply", str(ROOT / ".github/patches/agent-mcp-server.diff")],
-                           cwd=directory, check=True)
+            patch = (ROOT / ".github/patches/agent-mcp-server.diff").read_bytes()
+            subprocess.run(["git", "apply", "-"], cwd=directory, input=patch, check=True)
             expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
             patched = source.read_text()
             patched_webrtc = source.with_name("webrtc.rs").read_text()

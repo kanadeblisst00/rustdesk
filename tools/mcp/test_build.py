@@ -36,9 +36,10 @@ class BuildFlagTest(unittest.TestCase):
                     patch.object(build.mcp_package, 'package_linux') as package:
                 build.build_flutter_deb('1.5.0', 'flutter,mcp')
                 flutter.assert_called_once_with(['flutter', 'build', 'linux', '--release'], cwd='flutter')
-                self.assertEqual(package.call_args.args[:4], (
-                    f'flutter/build/linux/{directory}/release/bundle/',
-                    'rustdesk-mcp-1.5.0.deb', '1.5.0', arch))
+                self.assertEqual(Path(package.call_args.args[0]),
+                                 Path('flutter') / f'build/linux/{directory}/release/bundle')
+                self.assertEqual(package.call_args.args[1:4],
+                                 ('rustdesk-mcp-1.5.0.deb', '1.5.0', arch))
 
     def test_windows_mcp_renames_payload_and_enables_portable_identity(self):
         for features, mcp in [('flutter', False), ('flutter,mcp', True)]:

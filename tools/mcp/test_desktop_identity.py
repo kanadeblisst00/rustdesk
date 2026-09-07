@@ -127,7 +127,7 @@ class DesktopIdentityTest(unittest.TestCase):
                     package.package_macos(app)
                     calls = [c.args[0] for c in run.call_args_list]
                     self.assertEqual(calls[0][1], "--mcp-identity-info")
-                    self.assertTrue(calls[1][-1].endswith("/service"))
+                    self.assertEqual(Path(calls[1][-1]).name, "service")
                     self.assertEqual(calls[-1][1:5], ["--verify", "--deep", "--strict", str(app.resolve())])
                 target = app.with_name("RustDeskMCP.app")
                 with (target / "Contents/Info.plist").open("rb") as stream:
