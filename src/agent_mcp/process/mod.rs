@@ -1,3 +1,4 @@
+mod environment;
 mod platform;
 mod store;
 #[cfg(test)]
@@ -212,6 +213,9 @@ pub(crate) fn dispatch(
         let _permit = permit;
         let result = (|| {
             let _identity_guard = identity.enter()?;
+            if request["operation"] == "get_environment" {
+                return environment::observe(&identity, &request["arguments"]);
+            }
             let operation = request["operation"].as_str().ok_or("Missing operation")?;
             let _lock = if matches!(operation, "run_process" | "remove_process")
                 || rustdesk_agent_mcp::workspace::is_tool(operation)

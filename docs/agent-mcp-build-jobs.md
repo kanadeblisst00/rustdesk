@@ -55,6 +55,16 @@ Windows 进程树在暂停状态加入 Job Object 后才恢复执行；用户令
 
 工作区保存在命令存储目录的 `.workspaces` 子目录。worker 异常退出留下的租约不会自动抢占，以免两个构建写入同一目录。用 `get_workspace` 查看租约的任务 ID，先查明未知任务状态再人工恢复。
 
+## 环境检查与依赖准备
+
+完成终端认证后调用 `get_environment`，可指定 `executables:["git","python","cmake"]` 和用于检查磁盘空间的绝对目录 `path`。返回 OS、运行进程架构、逻辑 CPU 数、终端执行身份、选定环境变量、实际任务存储路径、可用磁盘空间和工具路径。Windows 登录用户令牌使用对应用户的环境；终端按现有规则授权为当前服务进程时，会明确显示该身份来源。
+
+工具查找只检查 PATH 中的文件，跳过相对 PATH 项；`version_verified:false` 和 `package_checks_performed:false` 表示尚未验证版本或包导入。`get_environment` 不安装软件、不执行扫描到的程序，也不输出任意环境变量。需要精确版本时使用 `run_process` 执行 `python --version`、`python -c "import pytest"`、`cmake --version` 等明确探针，并核对退出码和输出。
+
+依赖可以提前准备，也可以由构建清单声明安装命令，经过授权后作为普通命令任务执行。原生任务运行器不依赖 Python；运行 Python 项目时仍需目标机器的 Python 和项目依赖。建议为每个工作区创建独立虚拟环境，再调用其中解释器的绝对路径执行 `-m pip install -r ...`。激活 shell、切换目录或设置环境变量不会跨独立任务自动继承，应通过 `cwd`、`env` 和明确的可执行路径表达。
+
+`interactive_desktop_verified:false` 表示环境变量不能证明 GUI 可用。GUI 测试需要实际用户会话、图形环境及项目测试驱动；原生 UIA 仍仅 Windows 支持。
+
 ## 多机并发与控制请求
 
 不同设备、不同会话类型可以并行连接；同一设备同一类型按 FIFO 等待，最多 8 个等待者、最多等待 30 秒，然后执行原有的连接/认证流程。所有连接仍受 16 会话上限约束。慢设备不再占用其他设备的全局连接锁。
@@ -83,3 +93,5 @@ HTTP 为 `wait_for_event` 单独保留 4 个名额，普通请求保留 8 个名
 并发改动仅涉及 MCP 连接队列、HTTP 请求容量、stdio 转发与新命令存储锁。`src/agent_mcp/session.rs` 只替换连接入口的全局互斥锁，不更改连接和认证主体；其中开始任务前已有的断开会话修复不属于本次提交。测试用被阻塞的请求验证快速请求仍能完成，并检查初始化顺序、EOF 排空、事件等待满额后的取消请求容量及不同设备互不阻塞。
 
 macOS 系统服务是独立的 `service` 程序，不能只在 Flutter 的 `core_main` 注册 worker 参数。`src/lib.rs` 提供窄入口，`src/service.rs` 在任何服务初始化前分流 `--mcp-process-worker`；其他服务参数仍走原路径。已使用本机编译的 `service` 运行 `tools/mcp/test_process_worker.py`，三项实际执行测试通过。其他平台可设置 `RUSTDESK_MCP_TEST_EXECUTABLE` 为构建后的 MCP 可执行文件，再运行同一测试；未设置时明确跳过，不连接远端设备。
+
+环境检查仅增加 `process/environment.rs`、各平台 Identity 的只读环境读取、协议目录和能力字段，不更改命令注入或用户令牌选择。测试确认发现文件不会执行文件，并使用真实临时目录读取磁盘容量；Windows 环境与磁盘 API 经过交叉类型检查，登录用户环境仍需 Windows 实机验证。

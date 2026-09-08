@@ -16,6 +16,7 @@ pub fn tools() -> Vec<Value> {
             json!({"job_id":id,"stream":{"type":"string","enum":["stdout","stderr"]},"offset":{"type":"integer","minimum":0,"maximum":9007199254740991i64},"max_bytes":{"type":"integer","minimum":1,"maximum":65536}}), vec!["job_id","stream"]),
         ("cancel_process", "Request cancellation of a command and its process group/job object. Query status until terminal; requesting cancellation is not confirmation. Does not use a possibly recycled PID.", false, json!({"job_id":id}), vec!["job_id"]),
         ("remove_process", "Remove one completed command's retained state and logs. Active or unknown jobs cannot be removed through this tool.", false, json!({"job_id":id}), vec!["job_id"]),
+        ("get_environment", "Inspect the authenticated terminal user's remote OS/architecture, CPU count, selected environment variables, disk space and executable paths. Does not execute version/import checks or install dependencies. Windows uses the authorized user's environment, not the service's PATH. GUI environment variables do not prove a usable interactive desktop.", true, json!({"path":{"type":"string","minLength":1,"maxLength":32768},"executables":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":64}}}), vec![]),
     ] {
         let mut properties = properties.as_object().cloned().unwrap_or_default();
         properties.insert("session".into(), json!({"type":"string","minLength":1,"maxLength":36}));
@@ -36,6 +37,7 @@ pub fn is_tool(name: &str) -> bool {
                 | "read_process_output"
                 | "cancel_process"
                 | "remove_process"
+                | "get_environment"
         )
 }
 
