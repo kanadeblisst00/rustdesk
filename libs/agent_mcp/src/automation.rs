@@ -17,6 +17,9 @@ pub fn is_tool(name: &str) -> bool {
             | "get_screen_text"
             | "find_text"
             | "click_text"
+            | "list_windows"
+            | "get_foreground_window"
+            | "focus_window"
     )
 }
 
@@ -88,7 +91,8 @@ pub fn validate_request(value: &Value) -> Result<(), String> {
         return Err("Invalid UIA envelope".into());
     }
     match request.get("operation").and_then(Value::as_str) {
-        Some("tree" | "capabilities") => Ok(()),
+        Some("tree" | "taskbar_tree" | "capabilities" | "windows" | "foreground") => Ok(()),
+        Some("focus_window") => validate_window(&request["element"]),
         Some("invoke" | "toggle" | "set_value") => {
             let element = request.get("element").ok_or("Missing UIA element")?;
             for key in ["element_id", "name", "automation_id", "control_type"] {
@@ -103,6 +107,12 @@ pub fn validate_request(value: &Value) -> Result<(), String> {
             if element["element_id"].as_str().map_or(true, str::is_empty) {
                 return Err("Empty UIA element ID".into());
             }
+            if element
+                .get("scope")
+                .is_some_and(|v| !matches!(v.as_str(), Some("foreground_window" | "taskbar")))
+            {
+                return Err("Invalid UIA scope".into());
+            }
             if request["operation"] == "set_value"
                 && request
                     .get("value")
@@ -115,6 +125,51 @@ pub fn validate_request(value: &Value) -> Result<(), String> {
         }
         _ => Err("Unknown UIA operation".into()),
     }
+}
+
+pub fn validate_window(window: &Value) -> Result<(), String> {
+    for key in [
+        "handle",
+        "process_id",
+        "process_started",
+        "title",
+        "class_name",
+    ] {
+        let value = window
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or("Invalid window identity")?;
+        if value.len() > 4096 || (key != "title" && value.is_empty()) {
+            return Err("Invalid window identity".into());
+        }
+    }
+    if window["handle"]
+        .as_str()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+        == 0
+        || window["process_id"]
+            .as_str()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0)
+            == 0
+        || window["process_started"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0)
+            == 0
+    {
+        return Err("Invalid window identity".into());
+    }
+    Ok(())
+}
+
+pub fn same_window(expected: &Value, current: &Value) -> bool {
+    validate_window(expected).is_ok()
+        && validate_window(current).is_ok()
+        && ["handle", "process_id", "process_started", "class_name"]
+            .iter()
+            .all(|key| expected[*key] == current[*key])
 }
 
 /// Clip physical desktop rectangles to the selected display, retaining original coordinates.
@@ -196,5 +251,32 @@ mod tests {
             &json!({"protocol":WIRE_VERSION,"id":"1","operation":"tree","script":"bad"})
         )
         .is_err());
+    }
+
+    #[test]
+    fn window_requests_require_bounded_identity_and_detect_handle_reuse() {
+        let window = json!({"handle":"123","process_id":"5","process_started":"678","class_name":"Chat","title":"Chat"});
+        assert!(validate_request(
+            &json!({"protocol":WIRE_VERSION,"id":"1","operation":"focus_window","element":window})
+        )
+        .is_ok());
+        assert!(validate_request(
+            &json!({"protocol":WIRE_VERSION,"id":"1","operation":"taskbar_tree"})
+        )
+        .is_ok());
+        for key in ["handle", "process_id", "process_started", "class_name"] {
+            let mut changed = window.clone();
+            changed[key] = json!("999");
+            assert!(!same_window(&window, &changed));
+        }
+        let mut renamed = window.clone();
+        renamed["title"] = json!("Chat - New message");
+        assert!(same_window(&window, &renamed));
+        for bad in [
+            json!({"handle":"123"}),
+            json!({"handle":"-1","process_id":"5","process_started":"678","class_name":"Chat","title":""}),
+        ] {
+            assert!(validate_window(&bad).is_err());
+        }
     }
 }

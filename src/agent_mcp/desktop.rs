@@ -217,7 +217,7 @@ pub(super) fn screenshot(
     }
     let original_width = img.width();
     let original_height = img.height();
-    let max_width = number(args, "max_width", 1920) as u32;
+    let max_width = number(args, "max_width", img.width() as i64) as u32;
     if img.width() > max_width {
         let height = ((img.height() as u64 * max_width as u64) / img.width() as u64).max(1) as u32;
         img = imageops::resize(&img, max_width, height, imageops::FilterType::Triangle);
@@ -227,6 +227,8 @@ pub(super) fn screenshot(
         .map_err(|e| e.to_string())?;
     let scale = original_width as f64 / img.width() as f64;
     let data = json!({"session":id.to_string(),"display":disp,"frame_id":frame.sequence,
+        "coordinate_space":"display_relative_original_pixels",
+        "image_to_display":{"offset_x":x,"offset_y":y,"scale_x":scale,"scale_y":original_height as f64 / img.height() as f64},
         "frame_age_ms":frame.captured.elapsed().as_millis(),"width":img.width(),"height":img.height(),
         "remote_width":frame.width,"remote_height":frame.height,"origin_x":x,"origin_y":y,
         "remote_pixels_per_image_pixel":scale,
@@ -376,7 +378,7 @@ pub(super) fn input(
                     "ctrl" | "control" => ControlKey::Control,
                     "alt" | "option" => ControlKey::Alt,
                     "shift" => ControlKey::Shift,
-                    "meta" | "cmd" | "command" | "win" | "super" => ControlKey::Meta,
+                    "meta" | "cmd" | "command" | "win" | "lwin" | "super" => ControlKey::Meta,
                     _ => {
                         return Err(
                             "Only Ctrl, Alt, Shift and Meta may precede the final key".into()
@@ -432,6 +434,10 @@ fn release_mouse(s: &FlutterSession, button: i32, x: i32, y: i32) -> Result<(), 
 
 fn control(key: &str) -> Option<ControlKey> {
     Some(match key {
+        "meta" | "cmd" | "command" | "win" | "lwin" | "super" => ControlKey::Meta,
+        "ctrl" | "control" => ControlKey::Control,
+        "alt" | "option" => ControlKey::Alt,
+        "shift" => ControlKey::Shift,
         "enter" | "return" => ControlKey::Return,
         "escape" | "esc" => ControlKey::Escape,
         "tab" => ControlKey::Tab,

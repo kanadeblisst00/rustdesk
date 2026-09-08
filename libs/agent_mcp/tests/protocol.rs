@@ -140,6 +140,12 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
         ),
         ("get_ui_tree", json!({"session":"s","timeout_ms":10001})),
         ("get_ui_state", json!({"session":"s","display":64})),
+        (
+            "get_ui_tree",
+            json!({"session":"s","scope":"all_processes"}),
+        ),
+        ("focus_window", json!({"session":"s","handle":123})),
+        ("list_windows", json!({"session":"s","launch":"app.exe"})),
     ] {
         let result = server
             .dispatch(request(
@@ -151,14 +157,14 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
     }
     assert_eq!(backend.calls.load(Ordering::Relaxed), 0);
     let tools = catalog::tools();
-    assert_eq!(tools.len(), 43);
+    assert_eq!(tools.len(), 46);
     for tool in tools
         .iter()
         .filter(|t| rustdesk_agent_mcp::automation::is_tool(t["name"].as_str().unwrap()))
     {
         let write = matches!(
             tool["name"].as_str().unwrap(),
-            "click_text" | "invoke_ui_element" | "set_ui_value"
+            "click_text" | "invoke_ui_element" | "set_ui_value" | "focus_window"
         );
         assert_eq!(tool["annotations"]["readOnlyHint"], !write);
         assert_eq!(tool["annotations"]["destructiveHint"], write);

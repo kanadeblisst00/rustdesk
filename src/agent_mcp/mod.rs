@@ -1,3 +1,4 @@
+mod actions;
 mod desktop;
 #[cfg(not(feature = "mcp-isolated"))]
 pub(crate) mod identity;
@@ -39,6 +40,7 @@ static STATUS: Mutex<String> = Mutex::new(String::new());
 pub(super) struct SessionState {
     events: Events,
     operation: Mutex<()>,
+    desktop_operation: rustdesk_agent_mcp::queue::OperationQueue,
     screenshot: Mutex<()>,
     pending_screenshot: Mutex<Option<desktop::PendingScreenshot>>,
     frame: Mutex<Option<desktop::Frame>>,
@@ -189,9 +191,13 @@ impl Backend for DesktopBackend {
             return Ok(success(
                 json!({"transport":["streamable-http","stdio-proxy"],
                 "desktop":true,"terminal":true,"files":true,"headless":true,
-                "clipboard":"remote received text","ocr":automation::ocr_capability()["configured"],
+                "clipboard":"remote text read/write (permission dependent)",
+                "clipboard_details":{"get":"last text received from remote","set":"replace remote text clipboard; paste is separate","remote_acknowledged":false},
+                "ocr":automation::ocr_capability()["configured"],
                 "ocr_details":automation::ocr_capability(),"accessibility_tree":true,
-                "uia_details":{"provider":"Windows UI Automation","scope":"foreground_window","requires_upgraded_peer":true},
+                "uia_details":{"provider":"Windows UI Automation","scope":"foreground_window","scopes":["foreground_window","taskbar"],"requires_upgraded_peer":true},
+                "windows":{"list":true,"foreground":true,"focus":true,"platform":"Windows","requires_upgraded_peer":true,"activation_may_be_denied":true},
+                "actions":{"delivery":"queued_to_rustdesk_transport","remote_acknowledged":false,"max_batch_actions":20,"max_delay_ms":10000,"screenshot_after":true,"foreground_observation_guard":true,"max_waiting_calls":8,"queue_timeout_ms":10000},
                 "camera":false,"host_skills":false,"max_sessions":16,"max_events":256,
                 "max_terminal_bytes":1048576,"max_frame_bytes":67108864,
                 "device_allowlist":LocalConfig::get_option("agent-mcp-devices"),
@@ -239,6 +245,23 @@ impl Backend for DesktopBackend {
         if matches!(name, "get_connection_info" | "list_displays") {
             return Ok(success(session::info(id, &s)));
         }
+        let queued_at = Instant::now();
+        let _queued = if s.is_default() {
+            let generation = state.automation.generation();
+            Some(state.desktop_operation.acquire(Duration::from_secs(10), || {
+                ensure_enabled()?;
+                let current = session::get(id)?;
+                if !Arc::ptr_eq(&s, &current) || generation != state.automation.generation() {
+                    return Err("Connection changed while waiting; observe before retrying".into());
+                }
+                if !read_only {
+                    writable()?;
+                }
+                Ok(())
+            })?)
+        } else {
+            None
+        };
         let _operation = state
             .operation
             .try_lock()
@@ -248,49 +271,11 @@ impl Backend for DesktopBackend {
             return automation::call(id, &s, &state, name, args);
         }
         if name == "execute_actions" {
-            let actions = args
-                .get("actions")
-                .and_then(Value::as_array)
-                .ok_or("Missing actions")?;
-            let catalog = rustdesk_agent_mcp::catalog::tools();
-            let mut validated = Vec::new();
-            for action in actions {
-                let name = action["name"].as_str().ok_or("Invalid action")?;
-                let mut arguments = action["arguments"]
-                    .as_object()
-                    .ok_or("Invalid action arguments")?
-                    .clone();
-                if arguments.contains_key("session") {
-                    return Err("Batch actions cannot override session".into());
-                }
-                arguments.insert("session".into(), json!(id.to_string()));
-                let tool = catalog
-                    .iter()
-                    .find(|t| t["name"] == name)
-                    .ok_or("Unknown action")?;
-                rustdesk_agent_mcp::catalog::validate(
-                    &tool["inputSchema"],
-                    &json!(arguments),
-                    "action",
-                )?;
-                validated.push((name, arguments));
-            }
-            let mut completed = Vec::new();
-            for (index, (name, arguments)) in validated.iter().enumerate() {
-                let result = writable()
-                    .and_then(|_| session::get(id))
-                    .and_then(|s| desktop::input(&s, &state, name, arguments));
-                match result {
-                    Ok(v) => completed.push(v),
-                    Err(e) => {
-                        return Ok(
-                            json!({"content":[{"type":"text","text":format!("Action {index} failed: {e}")}],
-                        "structuredContent":{"completed":completed,"failed_index":index},"isError":true}),
-                        )
-                    }
-                }
-            }
-            return Ok(success(json!({"queued_actions":completed.len()})));
+            let queue_wait_ms = queued_at.elapsed().as_millis();
+            let mut result = actions::call(id, &s, &state, args)?;
+            result["structuredContent"]["queue_wait_ms"] = json!(queue_wait_ms);
+            result["content"][0]["text"] = json!(result["structuredContent"].to_string());
+            return Ok(result);
         }
         if name.starts_with("mouse_") || name.starts_with("keyboard_") {
             return desktop::input(&s, &state, name, args);
