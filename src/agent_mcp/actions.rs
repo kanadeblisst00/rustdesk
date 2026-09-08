@@ -155,6 +155,11 @@ mod tests {
         let (observed_tx, observed_rx) = std::sync::mpsc::channel();
         let worker_active = active.clone();
         let worker_state = state.clone();
+        let ui_tree = Arc::new(Mutex::new(
+            json!({"available":true,"scope":"foreground_window","elements":[]}),
+        ));
+        let worker_tree = ui_tree.clone();
+        let (uia_tx, uia_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             while let Some(data) = rx.blocking_recv() {
                 match data {
@@ -167,6 +172,11 @@ mod tests {
                                     json!({"active_window":worker_active.lock().unwrap().clone()})
                                 }
                                 "focus_window" => json!({"focused":true,"active_window":window}),
+                                "tree" => worker_tree.lock().unwrap().clone(),
+                                "invoke" | "toggle" | "set_value" => {
+                                    uia_tx.send(request.clone()).unwrap();
+                                    json!({"acknowledged":true})
+                                }
                                 _ => panic!("Unexpected request"),
                             };
                             let reply = wire::encode(&json!({"protocol":rustdesk_agent_mcp::automation::WIRE_VERSION,"id":request["id"],"result":result})).unwrap();
@@ -312,13 +322,79 @@ mod tests {
             &s,
             &state,
             "get_ui_state",
-            json!({"include_uia":false,"include_ocr":false})
-                .as_object()
-                .unwrap(),
+            json!({"include_uia":false}).as_object().unwrap(),
         )
         .unwrap();
         assert_eq!(observation["structuredContent"]["uia"]["skipped"], true);
-        assert_eq!(observation["structuredContent"]["ocr"]["skipped"], true);
+        assert!(observation["structuredContent"].get("ocr").is_none());
+        let capabilities = DesktopBackend {
+            address: "127.0.0.1:59940".parse().unwrap(),
+        }
+        .call("get_capabilities", &Map::new())
+        .unwrap();
+        assert!(capabilities["structuredContent"].get("ocr").is_none());
+        assert!(capabilities["structuredContent"]
+            .get("ocr_details")
+            .is_none());
+
+        let query = json!({"text":"Save"});
+        for name in ["find_ui_element", "find_element", "click_text"] {
+            let missing =
+                automation::call(id, &s, &state, name, query.as_object().unwrap()).unwrap();
+            assert_eq!(missing["structuredContent"]["found"], false);
+            assert!(missing["structuredContent"].get("ocr").is_none());
+            assert!(missing["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["type"] == "image"));
+            assert_eq!(missing["isError"] == true, name == "click_text");
+            assert!(observed_rx.try_recv().is_err());
+            assert!(uia_rx.try_recv().is_err());
+        }
+        let button = json!({"element_id":"button","name":"Save","automation_id":"save",
+            "control_type":"Button","enabled":true,"offscreen":false,"password":false,
+            "bounds":{"x":10,"y":0,"width":20,"height":8},"patterns":["Invoke"]});
+        ui_tree.lock().unwrap()["elements"] = json!([button]);
+        let found = automation::call(
+            id,
+            &s,
+            &state,
+            "find_ui_element",
+            query.as_object().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(found["structuredContent"]["source"], "uia");
+        assert_eq!(found["structuredContent"]["matches"][0]["name"], "Save");
+        let clicked =
+            automation::call(id, &s, &state, "click_text", query.as_object().unwrap()).unwrap();
+        assert_eq!(clicked["structuredContent"]["action"]["acknowledged"], true);
+        assert_eq!(
+            uia_rx.recv_timeout(Duration::from_secs(1)).unwrap()["operation"],
+            "invoke"
+        );
+        assert!(observed_rx.try_recv().is_err());
+
+        ui_tree.lock().unwrap()["elements"][0]["patterns"] = json!([]);
+        let clicked =
+            automation::call(id, &s, &state, "click_text", query.as_object().unwrap()).unwrap();
+        assert_ne!(clicked["isError"], true);
+        for _ in 0..2 {
+            let message = observed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(message.mouse_event().x, 20);
+            assert_eq!(message.mouse_event().y, 4);
+        }
+        assert!(uia_rx.try_recv().is_err());
+
+        s.lc.write().unwrap().peer_info.as_mut().unwrap().platform = "Linux".into();
+        let unavailable = automation::call(id, &s, &state, "get_ui_state", &Map::new()).unwrap();
+        assert_eq!(unavailable["structuredContent"]["uia"]["available"], false);
+        assert!(unavailable["structuredContent"].get("ocr").is_none());
+        assert!(unavailable["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == "image"));
         tx.send(Data::Close).unwrap();
         worker.join().unwrap();
         crate::flutter::sessions::remove_session_by_session_id(&id);
