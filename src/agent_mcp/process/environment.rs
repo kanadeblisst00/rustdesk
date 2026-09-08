@@ -74,17 +74,25 @@ fn space(path: &Path) -> Result<Value, String> {
     Ok(json!({"available_bytes":available,"total_bytes":total}))
 }
 
-pub(super) fn observe(identity: &Identity, args: &Value) -> Result<Value, String> {
-    let (vars, user) = identity.environment()?;
-    let root = identity.root()?;
-    super::store::private_dir(&root)?;
-    let path = args["path"]
-        .as_str()
-        .map(PathBuf::from)
-        .unwrap_or(root.clone());
+fn disk_path(root: &Path, requested: Option<&str>) -> Result<PathBuf, String> {
+    let path = match requested {
+        Some(path) => PathBuf::from(path),
+        None => root
+            .ancestors()
+            .find(|path| path.is_dir())
+            .ok_or("No existing parent directory for job storage")?
+            .to_owned(),
+    };
     if !path.is_absolute() || !path.is_dir() {
         return Err("Environment disk path must be an existing absolute directory".into());
     }
+    Ok(path)
+}
+
+pub(super) fn observe(identity: &Identity, args: &Value) -> Result<Value, String> {
+    let (vars, user) = identity.environment()?;
+    let root = identity.root()?;
+    let path = disk_path(&root, args["path"].as_str())?;
     let names: Vec<&str> = match args["executables"].as_array() {
         Some(names) => names
             .iter()
@@ -157,5 +165,20 @@ mod tests {
         assert_eq!(resolve("missing-tool", &vars), None);
         assert!(space(&root).unwrap()["available_bytes"].as_u64().is_some());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disk_probe_does_not_create_job_storage() {
+        let root = std::env::temp_dir().join(format!("mcp-probe-{}", uuid::Uuid::new_v4()));
+        let storage = root.join("jobs");
+        let parent = disk_path(&storage, None).unwrap();
+        assert!(parent.is_dir());
+        assert!(space(&parent).unwrap()["available_bytes"]
+            .as_u64()
+            .is_some());
+        assert!(!root.exists());
+        assert!(disk_path(&storage, Some(storage.to_str().unwrap())).is_err());
+        assert!(!root.exists());
+        assert!(disk_path(&storage, Some("relative")).is_err());
     }
 }

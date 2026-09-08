@@ -106,7 +106,7 @@ def validate(manifest):
             raise MatrixError("Authentication fields must name controller environment variables")
         executables = target.get("executables", [])
         if (not isinstance(executables, list) or len(executables) > 32
-                or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_.+-]{1,64}", v)
+                or any(not isinstance(v, str) or v in (".", "..") or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", v)
                        for v in executables)):
             raise MatrixError("Invalid executable discovery list")
         if not isinstance(target.get("screenshot_on_failure", False), bool):

@@ -59,7 +59,7 @@ Windows 进程树在暂停状态加入 Job Object 后才恢复执行；用户令
 
 完成终端认证后调用 `get_environment`，可指定 `executables:["git","python","cmake"]` 和用于检查磁盘空间的绝对目录 `path`。返回 OS、运行进程架构、逻辑 CPU 数、终端执行身份、选定环境变量、实际任务存储路径、可用磁盘空间和工具路径。Windows 登录用户令牌使用对应用户的环境；终端按现有规则授权为当前服务进程时，会明确显示该身份来源。
 
-工具查找只检查 PATH 中的文件，跳过相对 PATH 项；`version_verified:false` 和 `package_checks_performed:false` 表示尚未验证版本或包导入。`get_environment` 不安装软件、不执行扫描到的程序，也不输出任意环境变量。需要精确版本时使用 `run_process` 执行 `python --version`、`python -c "import pytest"`、`cmake --version` 等明确探针，并核对退出码和输出。
+默认磁盘检查使用任务目录（如果已存在）或最近的已有父目录，预检不创建任务目录。工具查找只检查 PATH 中的文件，跳过相对 PATH 项；`version_verified:false` 和 `package_checks_performed:false` 表示尚未验证版本或包导入。`get_environment` 不安装软件、不执行扫描到的程序，也不输出任意环境变量。需要精确版本时使用 `run_process` 执行 `python --version`、`python -c "import pytest"`、`cmake --version` 等明确探针，并核对退出码和输出。
 
 依赖可以提前准备，也可以由构建清单声明安装命令，经过授权后作为普通命令任务执行。原生任务运行器不依赖 Python；运行 Python 项目时仍需目标机器的 Python 和项目依赖。建议为每个工作区创建独立虚拟环境，再调用其中解释器的绝对路径执行 `-m pip install -r ...`。激活 shell、切换目录或设置环境变量不会跨独立任务自动继承，应通过 `cwd`、`env` 和明确的可执行路径表达。
 
@@ -126,7 +126,7 @@ matrix.junit.xml 每台设备一条用例，反映整个流水线状态。项目
 
 ## 验证与回归面
 
-本地 macOS ARM64 验证真实命令 stdout/stderr、Unicode 环境值、非零退出码、重复请求、过期心跳、超时、日志限额、取消及孙进程清理；原生 MCP 回归 30 项通过，独立协议 30 项通过（stable 与 Rust 1.75）。Windows 平台模块通过 `windows 0.61.1`、`x86_64-pc-windows-gnu` 的交叉类型检查，尚不等于 Windows 实机运行验收。
+本地 macOS ARM64 验证真实命令 stdout/stderr、Unicode 环境值、非零退出码、重复请求、过期心跳、超时、日志限额、取消及孙进程清理；原生 MCP 回归 31 项通过，独立协议 30 项通过（stable 与 Rust 1.75）。Windows 平台模块通过 `windows 0.61.1`、`x86_64-pc-windows-gnu` 的交叉类型检查，尚不等于 Windows 实机运行验收。
 
 新增实现集中于 `src/agent_mcp/process` 和 `libs/agent_mcp/src/process.rs`。已有运行路径的必要改动如下：
 
@@ -150,3 +150,5 @@ macOS 系统服务是独立的 `service` 程序，不能只在 Flutter 的 `core
 后台入口集中于 `src/agent_mcp/daemon.rs`；`src/core_main.rs`、`src/lib.rs`、`src/service.rs` 仅增加参数分流，隔离版参数白名单放行控制端入口。普通启动不进入新路径。MCP 路由只在后台模式拒绝可见连接。测试在隔离子进程中启动真实 HTTP 监听，确认无需 Flutter、正确令牌可读能力、错误令牌被拒绝、可见连接被拒绝；另验证环境参数及令牌不进入错误文本。
 
 矩阵运行器新增独立的 tools/mcp/build_matrix.py、示例清单和回归测试；不改变现有桌面操作工具。测试覆盖并发、单机失败隔离、结果不确定时恢复原任务、日志字节续读、已删除任务拒绝重建、Git 版本不符、原样传参、凭据不写报告、产物下载校验和失败截图。原生 worker 的孙进程测试增加已启动标记，避免尚未启动孙进程就超时导致假通过。构建 workflow 只增加 toolkit 内容和构建产物的 worker 验证步骤；其他编译/打包步骤保持原样。该测试不建立 RustDesk 远程连接；Windows/Linux 真实远程认证、GUI 驱动与文件下载仍需部署后联调。
+
+环境预检收尾修复只改 process/environment.rs 的磁盘路径选择：任务目录尚不存在时查询已有父目录，不创建目录；测试确认成功/失败探测均不创建存储目录。清单校验同步约束可发现工具的简单文件名，避免本地校验通过后被远端拒绝。该变化不影响真正创建任务时的私有目录检查。
