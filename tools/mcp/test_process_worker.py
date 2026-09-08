@@ -32,16 +32,18 @@ class ProcessWorkerTest(unittest.TestCase):
                 deadline = time.monotonic() + 30
                 cancellation_sent = False
                 while time.monotonic() < deadline:
-                    state = json.loads((job / "state.json").read_text(encoding="utf-8"))
-                    if state["state"] not in ("starting", "running"):
+                    if process.poll() is not None:
                         break
-                    if cancel and state["state"] == "running" and not cancellation_sent:
+                    if cancel and (root / "started").is_file() and not cancellation_sent:
                         (job / "cancel.json").write_text("{}", encoding="utf-8")
                         cancellation_sent = True
                     time.sleep(0.02)
                 else:
                     self.fail("Built executable did not complete its worker entry point")
                 process.wait(timeout=5)
+                self.assertEqual(process.returncode, 0, "Worker exited unsuccessfully")
+                # Python's Windows file handles conflict with the worker's state replacement.
+                state = json.loads((job / "state.json").read_text(encoding="utf-8"))
                 result = {"state": state, "stdout": (job / "stdout.log").read_bytes(),
                           "stderr": (job / "stderr.log").read_bytes()}
                 if descendant:
@@ -65,7 +67,9 @@ class ProcessWorkerTest(unittest.TestCase):
         self.assertEqual(result["stderr"], b"error-stream")
 
     def test_cancel_running_command(self):
-        result = self.run_worker("import time; time.sleep(60)", cancel=True)
+        result = self.run_worker(
+            "import time,pathlib; pathlib.Path('started').write_text('ready'); time.sleep(60)",
+            cancel=True)
         self.assertEqual(result["state"]["state"], "cancelled")
 
     def test_timeout_cleans_up_grandchild(self):
