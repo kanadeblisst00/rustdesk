@@ -1,4 +1,5 @@
 mod actions;
+mod connection_queue;
 mod desktop;
 #[cfg(not(feature = "mcp-isolated"))]
 pub(crate) mod identity;
@@ -195,6 +196,7 @@ impl Backend for DesktopBackend {
                 "desktop":true,"terminal":true,"files":true,"headless":true,
                 "processes":{"supported":true,"requires_upgraded_peer":true,"session_kind":"terminal","durable_logs":true,"survives_disconnect":true,"max_active":16,"max_retained":256,"default_timeout_ms":3600000,"default_log_bytes_per_stream":16777216,"max_log_bytes_per_stream":268435456,"recovery":"query_same_job_id; stale worker is unknown, never automatically restarted"},
                 "workspaces":{"supported":true,"requires_upgraded_peer":true,"max_workspaces":64,"exclusive_commands":true,"source_fingerprint":"sha256","artifact_checksums":"sha256","source_revision":"caller-declared; not Git verified"},
+                "concurrency":{"http_control_slots":8,"http_event_wait_slots":4,"connection_queue":"per device and kind","connection_queue_timeout_ms":30000,"stdio_default_parallel":8},
                 "clipboard":"remote text read/write (permission dependent)",
                 "clipboard_details":{"get":"last text received from remote","set":"replace remote text clipboard; paste is separate","remote_acknowledged":false},
                 "accessibility_tree":true,

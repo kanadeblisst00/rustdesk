@@ -7,10 +7,14 @@ import ipaddress
 import json
 import os
 import sys
+import threading
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 MAX_REQUEST = 1024 * 1024
 MAX_RESPONSE = 96 * 1024 * 1024
+EMIT_LOCK = threading.Lock()
 
 
 class Proxy:
@@ -78,43 +82,67 @@ class Proxy:
 
 def emit(message):
     payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n"
-    sys.stdout.buffer.write(payload.encode("utf-8"))
-    sys.stdout.buffer.flush()
+    with EMIT_LOCK:
+        sys.stdout.buffer.write(payload.encode("utf-8"))
+        sys.stdout.buffer.flush()
+
+
+def forward_and_emit(proxy, message):
+    try:
+        response = proxy.forward(message)
+        if response is not None:
+            emit(response)
+    except (ValueError, OSError, http.client.HTTPException):
+        # A failed reply does not prove that the action failed. Never replay it here.
+        if isinstance(message, dict) and "id" not in message:
+            print("MCP notification could not be forwarded", file=sys.stderr)
+            return
+        emit_forward_error(message)
+
+
+def emit_forward_error(message, code=-32000):
+    request_id = message.get("id") if isinstance(message, dict) else None
+    emit({"jsonrpc": "2.0", "id": request_id, "error": {
+        "code": code, "message": "Unable to forward MCP request; verify RustDesk service, token and request size"
+    }})
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=os.environ.get("RUSTDESK_MCP_URL", "http://127.0.0.1:59940/mcp"))
+    parser.add_argument("--max-parallel", type=int, choices=range(1, 9), default=8,
+                        help="Maximum concurrent HTTP calls (default 8); responses may arrive out of order")
     args = parser.parse_args()
     try:
         proxy = Proxy(args.url, os.environ.get("RUSTDESK_MCP_TOKEN", ""))
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    while True:
-        line = sys.stdin.buffer.readline(MAX_REQUEST + 1)
-        if not line:
-            return 0
-        message = None
-        try:
-            if len(line) > MAX_REQUEST:
-                while line and not line.endswith(b"\n"):
-                    line = sys.stdin.buffer.readline(MAX_REQUEST + 1)
-                raise ValueError("MCP request exceeds 1 MiB")
-            message = json.loads(line)
-            response = proxy.forward(message)
-            if response is not None:
-                emit(response)
-        except (ValueError, OSError, http.client.HTTPException) as exc:
-            # Never retry an action: the remote side may have executed it before a connection failed.
-            if isinstance(message, dict) and "id" not in message:
-                print("MCP notification could not be forwarded", file=sys.stderr)
+    pending = deque()
+    with ThreadPoolExecutor(max_workers=args.max_parallel, thread_name_prefix="mcp-http") as pool:
+        while True:
+            line = sys.stdin.buffer.readline(MAX_REQUEST + 1)
+            if not line:
+                return 0  # The executor drains accepted requests before closing stdout.
+            try:
+                if len(line) > MAX_REQUEST:
+                    while line and not line.endswith(b"\n"):
+                        line = sys.stdin.buffer.readline(MAX_REQUEST + 1)
+                    raise ValueError("MCP request exceeds 1 MiB")
+                message = json.loads(line)
+            except ValueError as exc:
+                emit_forward_error(None, -32700 if isinstance(exc, json.JSONDecodeError) else -32000)
                 continue
-            request_id = message.get("id") if isinstance(message, dict) else None
-            code = -32700 if isinstance(exc, json.JSONDecodeError) else -32000
-            emit({"jsonrpc": "2.0", "id": request_id, "error": {
-                "code": code, "message": "Unable to forward MCP request; verify RustDesk service, token and request size"
-            }})
+            if isinstance(message, dict) and message.get("method") == "initialize":
+                while pending:
+                    pending.popleft().result()
+                forward_and_emit(proxy, message)
+            elif isinstance(message, dict) and "id" not in message:
+                forward_and_emit(proxy, message)
+            else:
+                if len(pending) >= 32:
+                    pending.popleft().result()
+                pending.append(pool.submit(forward_and_emit, proxy, message))
 
 
 if __name__ == "__main__":

@@ -212,9 +212,15 @@ pub(crate) fn dispatch(
         let _permit = permit;
         let result = (|| {
             let _identity_guard = identity.enter()?;
-            let _lock = STORE_LOCK.lock().unwrap();
-            let store = store::Store::new(identity.root()?)?;
             let operation = request["operation"].as_str().ok_or("Missing operation")?;
+            let _lock = if matches!(operation, "run_process" | "remove_process")
+                || rustdesk_agent_mcp::workspace::is_tool(operation)
+            {
+                Some(STORE_LOCK.lock().unwrap())
+            } else {
+                None
+            };
+            let store = store::Store::new(identity.root()?)?;
             if rustdesk_agent_mcp::workspace::is_tool(operation) {
                 return workspace::call(&store, operation, &request["arguments"], |dir| {
                     identity.launch(dir)

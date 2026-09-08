@@ -12,7 +12,6 @@ use hbb_common::{
 use std::sync::atomic::{AtomicI32, Ordering};
 
 static NEXT_JOB: AtomicI32 = AtomicI32::new(1_000_000_000);
-static CONNECT: Mutex<()> = Mutex::new(());
 
 pub(super) fn allowed(peer: &str) -> bool {
     let policy = LocalConfig::get_option("agent-mcp-devices");
@@ -75,9 +74,8 @@ pub(super) fn info(id: SessionID, s: &FlutterSession) -> Value {
 }
 
 pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {
-    let _connecting = CONNECT
-        .try_lock()
-        .map_err(|_| "Another connection is opening; retry shortly")?;
+    let queue = super::connection_queue::get(string(args, "device_id")?, args.get("kind").and_then(Value::as_str).unwrap_or("desktop"));
+    let _connecting = queue.acquire(Duration::from_secs(30), writable)?;
     let peer = string(args, "device_id")?;
     if peer.starts_with('-')
         || peer

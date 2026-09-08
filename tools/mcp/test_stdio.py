@@ -18,10 +18,15 @@ TOKEN = "a" * 64
 
 class Handler(BaseHTTPRequestHandler):
     seen = []
+    release_wait = threading.Event()
 
     def do_POST(self):
         message = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.seen.append((message, self.headers["Authorization"], self.headers["MCP-Protocol-Version"]))
+        if message.get("method") == "test/slow":
+            self.release_wait.wait(3)
+        if message.get("method") == "test/fast":
+            self.release_wait.set()
         if "id" not in message:
             self.send_response(202)
             self.end_headers()
@@ -98,6 +103,35 @@ class ProxyTest(unittest.TestCase):
                                 env={k: v for k, v in os.environ.items() if k != "RUSTDESK_MCP_TOKEN"})
         self.assertEqual(output.returncode, 2)
         self.assertEqual(output.stdout, "")
+
+    def test_slow_call_does_not_block_control_and_eof_drains_replies(self):
+        Handler.release_wait.clear()
+        Handler.seen = []
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            messages = [
+                {"jsonrpc": "2.0", "id": "init", "method": "initialize"},
+                {"jsonrpc": "2.0", "id": "slow", "method": "test/slow"},
+                {"jsonrpc": "2.0", "id": "fast", "method": "test/fast"},
+            ]
+            output = subprocess.run(
+                [sys.executable, str(SCRIPT), "--url", "http://127.0.0.1:%d/mcp" % server.server_port],
+                input="\n".join(json.dumps(m) for m in messages) + "\n", text=True, capture_output=True,
+                env={**os.environ, "RUSTDESK_MCP_TOKEN": TOKEN}, timeout=2)
+            self.assertEqual(output.returncode, 0, output.stderr)
+            replies = [json.loads(line) for line in output.stdout.splitlines()]
+            self.assertEqual(replies[0]["id"], "init")
+            self.assertEqual({r["id"] for r in replies}, {"init", "slow", "fast"})
+            self.assertEqual(len(Handler.seen), 3)
+            self.assertTrue(all(item[2] == "2025-11-25" for item in Handler.seen[1:]))
+            self.assertNotIn(TOKEN, output.stdout + output.stderr)
+        finally:
+            Handler.release_wait.set()
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
 
 if __name__ == "__main__":
