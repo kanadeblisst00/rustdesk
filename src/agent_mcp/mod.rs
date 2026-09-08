@@ -8,6 +8,7 @@ mod session;
 mod automation;
 pub(crate) mod remote;
 mod wire;
+pub(crate) mod process;
 #[cfg(test)]
 mod network_tests;
 pub(crate) use automation::response as automation_response;
@@ -51,6 +52,7 @@ pub(super) struct SessionState {
     overwrites: Mutex<HashMap<(i32, i32), bool>>,
     directory: Mutex<Option<Value>>,
     automation: automation::State,
+    process: process::State,
     headless: bool,
 }
 
@@ -191,6 +193,7 @@ impl Backend for DesktopBackend {
             return Ok(success(
                 json!({"transport":["streamable-http","stdio-proxy"],
                 "desktop":true,"terminal":true,"files":true,"headless":true,
+                "processes":{"supported":true,"requires_upgraded_peer":true,"session_kind":"terminal","durable_logs":true,"survives_disconnect":true,"max_active":16,"max_retained":256,"default_timeout_ms":3600000,"default_log_bytes_per_stream":16777216,"max_log_bytes_per_stream":268435456,"recovery":"query_same_job_id; stale worker is unknown, never automatically restarted"},
                 "clipboard":"remote text read/write (permission dependent)",
                 "clipboard_details":{"get":"last text received from remote","set":"replace remote text clipboard; paste is separate","remote_acknowledged":false},
                 "accessibility_tree":true,
@@ -240,6 +243,9 @@ impl Backend for DesktopBackend {
         }
         if name == "terminal_output" {
             return session::terminal_output(&state, args);
+        }
+        if rustdesk_agent_mcp::process::is_tool(name) {
+            return process::call(id, &s, &state, name, args);
         }
         if matches!(name, "get_connection_info" | "list_displays") {
             return Ok(success(session::info(id, &s)));

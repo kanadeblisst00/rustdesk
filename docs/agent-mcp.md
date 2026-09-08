@@ -209,6 +209,8 @@ OCR 功能已移除：`get_screen_text`、`find_text` 和 `include_ocr` 参数�
 
 ### 终端
 
+持续构建与自动测试优先使用新增的 `run_process`、`get_process_status`、`read_process_output`、`cancel_process`、`list_processes`、`remove_process`。这些工具在终端认证后直接运行独立命令，提供磁盘日志及断线恢复；详见 [远程构建与测试](agent-mcp-build-jobs.md)。交互式 shell 仍使用下述 PTY 工具。
+
 以 `kind:"terminal"` 连接，在认证完成后调用 `terminal_open`，例如 `terminal_id:1, rows:24, cols:80`。等待 `terminal_response` 的 `opened` 且 `success:true`，再发送 `terminal_input`。文本按原样发送，提交 shell 命令通常需要末尾 `\r`；终端操作可能执行任意远端命令，必须获得用户授权。
 
 `terminal_output` 使用**字节游标**，保存返回的 `next_cursor` 继续读取。`data_base64` 保留完整原始字节；`text` 是容错 UTF-8 显示，跨分片或非 UTF-8 输出以原始字节为准。输出淘汰时 `truncated:true`，不会默默假装输出完整。关闭 PTY 后保留尾部日志供读取，重用已用终端 ID 会报错。

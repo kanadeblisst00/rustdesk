@@ -1328,6 +1328,10 @@ impl<T: InvokeUiSession> Remote<T> {
     async fn handle_msg_from_peer(&mut self, data: &[u8], peer: &mut Stream) -> bool {
         if let Ok(msg_in) = Message::parse_from_bytes(&data) {
             #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+            if crate::agent_mcp::process::response(&self.handler.get_id(), self.handler.is_terminal(), &msg_in) {
+                return true;
+            }
+            #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
             if crate::agent_mcp::automation_response(&self.handler.get_id(), &msg_in) {
                 return true;
             }

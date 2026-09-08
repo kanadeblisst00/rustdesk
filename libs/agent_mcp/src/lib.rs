@@ -5,6 +5,7 @@ pub mod events;
 pub mod helper;
 pub mod http;
 pub mod pixels;
+pub mod process;
 pub mod queue;
 
 use serde_json::{json, Map, Value};
