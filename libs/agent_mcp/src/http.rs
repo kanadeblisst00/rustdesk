@@ -17,6 +17,7 @@ pub const MAX_BODY: usize = 1024 * 1024;
 struct HttpState {
     server: Arc<Server>,
     slots: Arc<Semaphore>,
+    wait_slots: Arc<Semaphore>,
     listen_address: Option<SocketAddrV4>,
 }
 
@@ -27,6 +28,7 @@ pub fn router(server: Arc<Server>) -> Router {
         .with_state(HttpState {
             server,
             slots: Arc::new(Semaphore::new(8)),
+            wait_slots: Arc::new(Semaphore::new(4)),
             listen_address: None,
         })
 }
@@ -41,6 +43,7 @@ pub fn router_on(server: Arc<Server>, address: SocketAddrV4) -> Router {
         .with_state(HttpState {
             server,
             slots: Arc::new(Semaphore::new(8)),
+            wait_slots: Arc::new(Semaphore::new(4)),
             listen_address: Some(address),
         })
 }
@@ -183,7 +186,7 @@ async fn handle(
     {
         return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
     }
-    let message = match serde_json::from_slice(&body) {
+    let message: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(_) => {
             return (
@@ -193,7 +196,17 @@ async fn handle(
                 .into_response()
         }
     };
-    let Ok(permit) = state.slots.clone().try_acquire_owned() else {
+    let waiting = message.get("method").and_then(serde_json::Value::as_str) == Some("tools/call")
+        && message
+            .pointer("/params/name")
+            .and_then(serde_json::Value::as_str)
+            == Some("wait_for_event");
+    let slots = if waiting {
+        state.wait_slots
+    } else {
+        state.slots
+    };
+    let Ok(permit) = slots.try_acquire_owned() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
     let server = state.server;

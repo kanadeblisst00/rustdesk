@@ -393,6 +393,80 @@ async fn http_notifications_have_no_body_and_get_is_optional() {
     );
 }
 
+#[tokio::test]
+async fn long_polls_cannot_consume_control_request_capacity() {
+    #[derive(Default)]
+    struct Waiting {
+        started: AtomicUsize,
+        release: AtomicBool,
+    }
+    impl Backend for Waiting {
+        fn token(&self) -> Option<String> {
+            Some(TOKEN.into())
+        }
+        fn call(&self, name: &str, _: &Map<String, Value>) -> ToolResult {
+            if name == "wait_for_event" {
+                self.started.fetch_add(1, Ordering::SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !self.release.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            Ok(success(json!({"tool":name})))
+        }
+    }
+    fn tool_request(name: &str, arguments: Value) -> Request<Body> {
+        Request::builder()
+            .uri("/mcp")
+            .method("POST")
+            .header("Host", "127.0.0.1:59940")
+            .header("Authorization", format!("Bearer {TOKEN}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                request("tools/call", json!({"name":name,"arguments":arguments})).to_string(),
+            ))
+            .unwrap()
+    }
+    let backend = Arc::new(Waiting::default());
+    let app = http::router(Arc::new(Server::new(backend.clone())));
+    let mut waits = Vec::new();
+    for _ in 0..4 {
+        waits.push(tokio::spawn(app.clone().oneshot(tool_request(
+            "wait_for_event",
+            json!({"session":"test","cursor":0,"timeout_ms":1000}),
+        ))));
+    }
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while backend.started.load(Ordering::SeqCst) != 4 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(backend.started.load(Ordering::SeqCst), 4);
+    let overflow = app
+        .clone()
+        .oneshot(tool_request(
+            "wait_for_event",
+            json!({"session":"test","cursor":0}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(overflow.status(), StatusCode::TOO_MANY_REQUESTS);
+    let control = tokio::time::timeout(
+        Duration::from_millis(500),
+        app.oneshot(tool_request(
+            "cancel_process",
+            json!({"session":"test","job_id":"build"}),
+        )),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(control.status(), StatusCode::OK);
+    backend.release.store(true, Ordering::SeqCst);
+    for wait in waits {
+        assert_eq!(wait.await.unwrap().unwrap().status(), StatusCode::OK);
+    }
+}
+
 #[test]
 fn events_resume_filter_and_report_eviction() {
     let events = Events::default();
