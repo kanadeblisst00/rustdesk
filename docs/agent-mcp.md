@@ -160,6 +160,8 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 默认打开普通 RustDesk 窗口。`headless:true` 明确选择无远控窗口的会话，主 RustDesk 仍须运行；认证、连接状态和权限不变。同设备、同类型已有会话会被复用。通过返回的 `connected`、`needs_password` 和事件判断状态，必要时调用 `input_password`、`submit_2fa`，再重新检查连接。超时返回未连接状态不是认证成功。
 
+`connect_device` 对新连接和复用连接都会等待自动认证，最多等待 `timeout_ms`。收到登录 challenge 仅表示正在握手，不表示需要输入密码。返回的 `authentication` 为 `connecting` 或 `authenticating` 时，继续查询同一 UUID 的 `get_connection_info`，不要因此换成桌面连接或重复提交密码。`password_required` 表示远端明确要求密码；`password_or_approval` 表示本地缺少密码、仍可等待远端批准，MCP 会先等待本次连接超时，以便最近会话放行或远端批准有机会完成；`waiting_remote_approval` 表示远端要求人工批准。`two_factor_required`、`os_login_required`、`os_login_and_password_required` 分别表示 2FA、系统账户、系统账户加连接密码要求。只有 `connected:true` / `authenticated` 表示登录已完成；PTY 是否已经创建仍应检查 `terminal_response` 的成功 `opened` 事件或 `terminal_output` 的 `ready`。
+
 可见连接由 MCP 监听进程直接向本进程主窗口发送连接事件，避免启动第二个应用实例及其 MCP/IPC 端口争用。主窗口事件通道不可用时立即返回错误，可重新打开主窗口或显式使用 `headless:true`。
 
 桌面操作先确认目标应用，再观察控件并操作。Windows 可先用 `list_windows` 按 `title` / `process_name` 筛选运行中的窗口，选择唯一的 `window_id` 后调用 `focus_window`；只有返回 `focused:true` 才表示观察到了目标前台窗口，并不证明输入框已经获得焦点。`get_foreground_window` 不遍历控件树。窗口 ID 绑定会话，30 秒过期，重连后失效；窗口操作需要被控端更新。Windows 可能拒绝激活，此时用任务栏 UIA 或截图重新定位。

@@ -2626,6 +2626,8 @@ struct ConnToken {
 /// Login config handler for [`Client`].
 #[derive(Default)]
 pub struct LoginConfigHandler {
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    pub(crate) agent_auth: crate::agent_mcp::auth::State,
     id: String,
     pub conn_type: ConnType,
     pub is_terminal_admin: bool,
@@ -4280,6 +4282,8 @@ pub fn handle_login_error(
     err: &str,
     interface: &impl Interface,
 ) -> bool {
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    crate::agent_mcp::auth::login_error(&lc, err);
     if err == LOGIN_MSG_PASSWORD_EMPTY {
         lc.write().unwrap().password = Default::default();
         interface.msgbox("input-password", "Password Required", "", "");
@@ -4414,6 +4418,8 @@ pub async fn handle_hash(
     interface: &impl Interface,
     peer: &mut Stream,
 ) -> bool {
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    crate::agent_mcp::auth::begin(&lc);
     lc.write().unwrap().hash = hash.clone();
     // Take care of password application order
 
@@ -4510,6 +4516,8 @@ pub async fn handle_hash(
     let is_terminal_admin = lc.read().unwrap().is_terminal_admin;
     let is_terminal = lc.read().unwrap().conn_type.eq(&ConnType::TERMINAL);
     if is_terminal && is_terminal_admin {
+        #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+        crate::agent_mcp::auth::terminal_prompt(&lc, password.is_empty());
         if password.is_empty() {
             interface.msgbox("terminal-admin-login-password", "", "", "");
         } else {
@@ -4520,6 +4528,8 @@ pub async fn handle_hash(
     }
 
     let password = if password.is_empty() {
+        #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+        crate::agent_mcp::auth::password_prompt(&lc);
         // login without password, the remote side can click accept
         interface.msgbox("input-password", "Password Required", "", "");
         Vec::new()
@@ -4601,6 +4611,8 @@ pub async fn handle_login_from_ui(
     remember: bool,
     peer: &mut Stream,
 ) {
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    crate::agent_mcp::auth::begin(&lc);
     let mut hash_password = if password.is_empty() {
         let mut password2 = lc.read().unwrap().password.clone();
         if password2.is_empty() {

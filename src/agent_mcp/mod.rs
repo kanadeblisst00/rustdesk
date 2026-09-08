@@ -1,4 +1,5 @@
 mod actions;
+pub(crate) mod auth;
 mod connection_queue;
 mod lifecycle;
 pub(crate) mod daemon;

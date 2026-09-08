@@ -1302,6 +1302,8 @@ impl<T: InvokeUiSession> Session<T> {
             lc.policy_relay = true;
             lc.peer_relay = true;
         }
+        #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+        crate::agent_mcp::auth::reset(&self.lc);
         self.lc.write().unwrap().peer_info = None;
         self.reconnect_count.fetch_add(1, Ordering::SeqCst);
         let mut lock = self.thread.lock().unwrap();

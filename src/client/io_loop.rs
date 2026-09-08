@@ -586,6 +586,8 @@ impl<T: InvokeUiSession> Remote<T> {
                 self.check_clipboard_file_context();
             }
             Data::Message(msg) => {
+                #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+                crate::agent_mcp::auth::outgoing(&self.handler.lc, &msg);
                 match &msg.union {
                     Some(message::Union::Misc(misc)) => match misc.union {
                         Some(misc::Union::RefreshVideo(_)) => {
