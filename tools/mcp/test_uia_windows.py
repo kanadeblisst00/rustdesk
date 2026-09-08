@@ -98,6 +98,49 @@ class WindowsUiaTests(unittest.TestCase):
         button["name"] = "wrong identity"
         self.assertIn("STALE_TARGET", self.request("invoke", element=button)["error"])
 
+    def test_window_enumeration_focus_and_stale_process_identity(self):
+        windows = self.request("windows")
+        self.assertNotIn("error", windows)
+        window = next(w for w in windows["windows"] if w["title"] == "RustDesk UIA regression fixture")
+        self.assertTrue(window["process_started"])
+        self.assertEqual(window["process_id"], str(self.fixture.pid))
+        focused = self.request("focus_window", element=window)
+        self.assertNotIn("error", focused)
+        self.assertTrue(focused["focused"], focused)
+        foreground = self.request("foreground")["active_window"]
+        self.assertEqual(foreground["handle"], window["handle"])
+        self.assertNotIn("elements", foreground)
+        stale = dict(window, process_started="1")
+        self.assertIn("STALE_TARGET", self.request("focus_window", element=stale)["error"])
+
+    def test_taskbar_scope_is_separate_from_the_foreground_app(self):
+        result = self.request("taskbar_tree")
+        self.assertNotIn("error", result)
+        self.assertEqual(result["scope"], "taskbar")
+        self.assertTrue(all(e["scope"] == "taskbar" for e in result["elements"]))
+        self.assertFalse(any(e["automation_id"] == "uia_edit" for e in result["elements"]))
+
+
+@unittest.skipUnless(os.environ.get("RUSTDESK_TEST_PWSH"), "set RUSTDESK_TEST_PWSH to validate the PowerShell helper")
+class HelperSyntaxTests(unittest.TestCase):
+    def test_script_parses_and_embedded_csharp_compiles(self):
+        script = Path(__file__).resolve().parents[2] / "src/platform/agent_uia.ps1"
+        command = r'''
+$ErrorActionPreference = 'Stop'
+$path = [Console]::In.ReadToEnd()
+$tokens = $null; $parseErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+$source = [System.IO.File]::ReadAllText($path)
+$match = [regex]::Match($source, "(?s)Add-Type -TypeDefinition @'\r?\n(.*?)\r?\n'@")
+if (-not $match.Success) { throw 'Missing embedded C# helper' }
+Add-Type -TypeDefinition $match.Groups[1].Value
+[Console]::Write('OK')
+'''
+        result = subprocess.run([os.environ["RUSTDESK_TEST_PWSH"], "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+                                input=str(script).encode(), capture_output=True, timeout=30, check=True)
+        self.assertEqual(result.stdout.decode("utf-8-sig"), "OK")
+
 
 if __name__ == "__main__":
     unittest.main()

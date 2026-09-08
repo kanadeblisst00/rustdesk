@@ -134,12 +134,13 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 ## 工具与工作流
 
-`tools/list` 返回 43 个工具的完整 JSON Schema，拒绝未知字段、越界坐标与不合法类型。所有会话操作必须使用返回的 `session` UUID，不能把设备 ID 当会话 UUID，也不会根据当前焦点猜测目标。
+`tools/list` 返回 46 个工具的完整 JSON Schema，拒绝未知字段、越界坐标与不合法类型。同一连接中复用已获取的 schema，避免每一步重新探查。所有会话操作必须使用返回的 `session` UUID，不能把设备 ID 当会话 UUID，也不会根据当前焦点猜测目标。
 
 | 类别 | 工具 |
 | --- | --- |
 | 能力与会话 | `get_capabilities`, `list_connections`, `connect_device`, `get_connection_info`, `disconnect_device`, `input_password`, `submit_2fa` |
 | 观察 | `list_displays`, `select_display`, `screenshot` |
+| Windows 窗口 | `list_windows`, `get_foreground_window`, `focus_window` |
 | UIA / OCR | `get_ui_tree`, `get_ui_state`, `find_ui_element`, `find_element`, `invoke_ui_element`, `set_ui_value`, `get_screen_text`, `find_text`, `click_text` |
 | 输入 | `mouse_move`, `mouse_click`, `mouse_drag`, `mouse_scroll`, `keyboard_input`, `keyboard_hotkey`, `execute_actions` |
 | 剪贴板 | `clipboard_get`, `clipboard_set` |
@@ -161,7 +162,9 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 可见连接由 MCP 监听进程直接向本进程主窗口发送连接事件，避免启动第二个应用实例及其 MCP/IPC 端口争用。主窗口事件通道不可用时立即返回错误，可重新打开主窗口或显式使用 `headless:true`。
 
-桌面工具先截图后操作，再截图确认效果。输入坐标是所选显示器的原始像素坐标；服务端会加上多显示器桌面原点（允许负原点）。截图有裁剪或缩放时：
+桌面操作先确认目标应用，再观察控件并操作。Windows 可先用 `list_windows` 按 `title` / `process_name` 筛选运行中的窗口，选择唯一的 `window_id` 后调用 `focus_window`；只有返回 `focused:true` 才表示观察到了目标前台窗口，并不证明输入框已经获得焦点。`get_foreground_window` 不遍历控件树、不运行 OCR。窗口 ID 绑定会话，30 秒过期，重连后失效；窗口操作需要被控端更新。Windows 可能拒绝激活，此时用任务栏 UIA 或截图重新定位。
+
+截图默认保留原始分辨率，可显式用 `max_width` 降采样。输入坐标是所选显示器的原始像素坐标；服务端会加上多显示器桌面原点（允许负原点）。截图同时返回 `coordinate_space` 与 `image_to_display` 映射，有裁剪或缩放时：
 
 ```text
 输入 x = origin_x + 图片 x × scale_x
@@ -172,13 +175,19 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 同一窗口重连会清除旧连接的截图、剪贴板、目录、PTY 和文件 job 缓存；观察到新的 `connection_ready` 后重新获取状态，截图游标从 0 开始，重新打开 PTY，不沿用旧 job ID。
 
-`keyboard_hotkey` 示例：`{"session":"<UUID>","keys":["Ctrl","c"]}`。`execute_actions` 最多 20 个输入动作，按顺序发送，失败即停，没有回滚。返回 `queued:true` 只代表 RustDesk 接受了请求，不代表远端已经执行成功。
+`keyboard_hotkey` 示例：`{"session":"<UUID>","keys":["Ctrl","c"]}`。`Meta`、`Win`、`LWin`、`Super`、`Cmd` 可用于单键或组合键。`execute_actions` 最多 20 个输入/剪贴板动作；各步骤可设 `delay_ms`（每步最多 2000、总计最多 10000）。可选 `expected_window` 在每步之前检查前台窗口身份，`screenshot_after:true` 在结束或部分失败后取得新截图。窗口检查不是原子输入保障，用户仍可能在检查后切换焦点。
+
+批次预校验所有参数，执行中失败即停，无回滚。返回每步排队结果、`failed_index`（失败时）、`queue_wait_ms` 和可选屏幕证据；`queued:true` / `queued_actions` 只代表本地传输队列接受，不表示远端已处理，更不表示消息已发送。截图失败单独返回 `screenshot_error`，不要把未验证当成功。同一桌面 UUID 的输入、剪贴板和 UIA/窗口操作按 FIFO 等待，最多 8 个等待者、最多等 10 秒；重连、权限撤销或等待超时取消尚未执行的请求。文件/终端会话的并发行为不变，截图和事件读取仍走独立路径。不同 UUID、其他控制端与人工操作仍需调用方协调。
+
+`clipboard_get` 读取最近收到的远端文本；`clipboard_set` 可向远端写入文本，会覆盖远端文本剪贴板，既不粘贴也不按回车。对已聚焦的自定义输入框，可在短批次内显式执行 `clipboard_set`、适当等待、`Ctrl+v`，再验证输入内容。不要在输入结果不确定时自动改用粘贴，避免重复文字或重复发送。流程选择与分析纠偏见 [桌面操作优化说明](agent-mcp-desktop-workflow.md)。
 
 Windows 组合热键显式按下修饰键和主键，先释放主键，再反向释放修饰键；中途失败也会尝试释放已经排队按下的键。字母/数字主键使用 Windows 虚拟按键编码，避免输入法或字符映射把 `Meta+r` 变成单独的 Windows 键。单键与其他平台保留原来的输入路径。
 
 ### Windows UIA 与 PP-OCRv4
 
-`get_ui_tree` 返回被控 Windows 的**前台窗口**控件树，包括名称、AutomationId、控件类型、父子关系、边界、可用 Pattern、焦点、非密码值和 Toggle 状态。最多 512 个节点、12 层；`truncated` 和 `unavailable_nodes` 标明不完整结果。树只保留与所选显示器相交的可见控件，`bounds` 已转换为显示器相对原始像素；`desktop_bounds` 保留 Windows 物理桌面坐标。负原点和 DPI 缩放不需要 agent 再计算。
+`get_ui_tree` 默认返回被控 Windows 的**前台窗口**控件树，也可用 `scope:"taskbar"` 只扫描主/副显示器任务栏及其中暴露的托盘控件。包括名称、AutomationId、控件类型、父子关系、边界、可用 Pattern、焦点、非密码值和 Toggle 状态。最多 512 个节点、12 层；`truncated` 和 `unavailable_nodes` 标明不完整结果。树只保留与所选显示器相交的可见控件，`bounds` 已转换为显示器相对原始像素；`desktop_bounds` 保留 Windows 物理桌面坐标。负原点和 DPI 缩放不需要 agent 再计算。窗口枚举工具的 `bounds` 则是全桌面物理坐标，需结合显示器原点使用。
+
+`get_ui_state` 默认组合 UIA、OCR 与截图；已知不需要的来源可设 `include_uia:false` / `include_ocr:false` 跳过。UIA 支持取决于应用及控件实现，不能仅按 Qt/Electron 等框架一概判定。OCR 识别已绘制的文字，不能把任务栏纯微信图标直接识别成“微信”；图标应使用暴露的 UIA 标签或视觉模型，不能保证一次命中。
 
 被控端使用系统 Windows PowerShell 的 MTA 子进程调用 .NET UI Automation，不安装 Python，也不需要开启被控端的 HTTP MCP 监听。请求只在现有 RustDesk 加密连接认证和会话类型校验后处理，读取与写入均要求远端键鼠权限；锁屏、安全桌面和 Session 0 返回不可用。新工具不会绕过 UAC 或提升权限。Windows 10/11 的交互桌面是目标环境，当前 macOS 本地验证不能替代 Windows 实机验收。
 

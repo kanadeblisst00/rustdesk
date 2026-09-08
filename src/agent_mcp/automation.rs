@@ -7,6 +7,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+pub(super) mod windows;
+
 struct Pending {
     id: String,
     result: Option<Result<Value, String>>,
@@ -23,18 +25,23 @@ struct Snapshot {
 pub(super) struct State {
     pending: Mutex<Option<Pending>>,
     snapshot: Mutex<Option<Snapshot>>,
-    unavailable: Mutex<Option<(Instant, String)>>,
+    unavailable: Mutex<Option<(Instant, String, String)>>,
     ocr: Mutex<Option<(Vec<u8>, Value)>>,
     generation: AtomicU64,
+    windows: windows::State,
 }
 
 impl State {
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
     pub fn reset(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.pending.lock().unwrap().take();
         self.snapshot.lock().unwrap().take();
         self.unavailable.lock().unwrap().take();
         self.ocr.lock().unwrap().take();
+        self.windows.clear();
     }
 }
 
@@ -92,7 +99,12 @@ pub(crate) fn response(peer_id: &str, msg: &hbb_common::message_proto::Message) 
     true
 }
 
-fn check(id: SessionID, s: &FlutterSession, state: &State, generation: u64) -> Result<(), String> {
+pub(super) fn check(
+    id: SessionID,
+    s: &FlutterSession,
+    state: &State,
+    generation: u64,
+) -> Result<(), String> {
     let current = session::get(id)?;
     if !Arc::ptr_eq(s, &current) || state.generation.load(Ordering::SeqCst) != generation {
         return Err("Connection changed; observe the remote desktop again".into());
@@ -122,7 +134,10 @@ fn request(
     {
         return Err("Remote UIA is available only on Windows".into());
     }
-    let mutation = !matches!(operation, "tree" | "capabilities");
+    let mutation = !matches!(
+        operation,
+        "tree" | "taskbar_tree" | "capabilities" | "windows" | "foreground"
+    );
     if mutation {
         desktop::input_allowed(s)?;
     }
@@ -163,9 +178,22 @@ fn request(
     }
 }
 
-fn tree(id: SessionID, s: &FlutterSession, state: &SessionState, display: usize) -> Value {
+fn tree(
+    id: SessionID,
+    s: &FlutterSession,
+    state: &SessionState,
+    display: usize,
+    scope: &str,
+) -> Value {
     state.automation.snapshot.lock().unwrap().take();
-    if let Some((time, error)) = state.automation.unavailable.lock().unwrap().as_ref() {
+    if let Some((time, error, _)) = state
+        .automation
+        .unavailable
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|(_, _, cached_scope)| cached_scope == scope)
+    {
         if time.elapsed() < Duration::from_secs(30) {
             return json!({"available":false,"error":error,"retry_after_ms":30000-time.elapsed().as_millis().min(30000)});
         }
@@ -176,7 +204,11 @@ fn tree(id: SessionID, s: &FlutterSession, state: &SessionState, display: usize)
             s,
             &state.automation,
             state.automation.generation.load(Ordering::SeqCst),
-            "tree",
+            if scope == "taskbar" {
+                "taskbar_tree"
+            } else {
+                "tree"
+            },
             None,
             None,
         )?;
@@ -227,13 +259,14 @@ fn tree(id: SessionID, s: &FlutterSession, state: &SessionState, display: usize)
             tree
         }
         Err(error) => {
-            *state.automation.unavailable.lock().unwrap() = Some((Instant::now(), error.clone()));
+            *state.automation.unavailable.lock().unwrap() =
+                Some((Instant::now(), error.clone(), scope.into()));
             json!({"available":false,"error":error})
         }
     }
 }
 
-fn fresh_shot(
+pub(super) fn fresh_shot(
     id: SessionID,
     s: &FlutterSession,
     state: &SessionState,
@@ -261,6 +294,7 @@ fn fresh_shot(
 fn ocr(shot: &Value, state: &State) -> Value {
     let started = Instant::now();
     let result = (|| {
+        let python = std::env::var_os("RUSTDESK_MCP_OCR_PYTHON").ok_or("PP-OCRv4 is not configured. Install tools/mcp/ocr-requirements.txt and set RUSTDESK_MCP_OCR_PYTHON before starting RustDesk. OCR recognizes rendered text, not unlabeled icons; use list_windows, taskbar UIA or screenshot vision for icons")?;
         let data = shot["content"]
             .as_array()
             .and_then(|items| items.iter().find(|v| v["type"] == "image"))
@@ -274,7 +308,6 @@ fn ocr(shot: &Value, state: &State) -> Value {
             }
         }
         drop(previous);
-        let python = std::env::var_os("RUSTDESK_MCP_OCR_PYTHON").ok_or("PP-OCRv4 is not configured. Install tools/mcp/ocr-requirements.txt and set RUSTDESK_MCP_OCR_PYTHON to that Python executable before starting RustDesk")?;
         let mut command = Command::new(python);
         command.args(["-I", "-c", include_str!("../../tools/mcp/ocr.py")]);
         let output = rustdesk_agent_mcp::helper::run(&mut command, &png, Duration::from_secs(15))?;
@@ -400,7 +433,10 @@ fn verify(
     }
     // Snapshot and UIA are independent observations; neither is proof of task completion.
     let shot = fresh_shot(id, s, state, display, timeout.min(3000));
-    let uia = tree(id, s, state, display);
+    let scope = before
+        .and_then(|v| v["scope"].as_str())
+        .unwrap_or("foreground_window");
+    let uia = tree(id, s, state, display, scope);
     let after = state.automation.snapshot.lock().unwrap();
     let changed = before
         .zip(after.as_ref())
@@ -439,6 +475,16 @@ pub(super) fn call(
     let generation = state.automation.generation.load(Ordering::SeqCst);
     let display = desktop::display(s, state, args);
     let timeout = number(args, "timeout_ms", 3000);
+    if matches!(
+        name,
+        "list_windows" | "get_foreground_window" | "focus_window"
+    ) {
+        return windows::call(id, s, state, name, args);
+    }
+    let scope = args
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("foreground_window");
     if matches!(name, "invoke_ui_element" | "set_ui_value") {
         desktop::input_allowed(s)?;
         let (element, before) =
@@ -469,10 +515,12 @@ pub(super) fn call(
             action,
         ));
     }
-    let uia = if matches!(name, "get_screen_text" | "find_text") {
+    let uia = if matches!(name, "get_screen_text" | "find_text")
+        || (name == "get_ui_state" && args.get("include_uia") == Some(&Value::Bool(false)))
+    {
         json!({"available":false,"skipped":true})
     } else {
-        tree(id, s, state, display)
+        tree(id, s, state, display, scope)
     };
     check(id, s, &state.automation, generation)?;
     if name == "get_ui_tree" {
@@ -483,7 +531,9 @@ pub(super) fn call(
         .map(|elements| model::find(elements, args))
         .unwrap_or_default();
     let shot = fresh_shot(id, s, state, display, timeout)?;
-    let text = if name == "get_ui_state"
+    let text = if name == "get_ui_state" && args.get("include_ocr") == Some(&Value::Bool(false)) {
+        json!({"available":false,"skipped":true})
+    } else if name == "get_ui_state"
         || matches!(name, "get_screen_text" | "find_text")
         || matches.is_empty()
     {
@@ -575,7 +625,7 @@ pub(super) fn call(
             )?
             .0["element_id"]
                 .clone();
-            let current = tree(id, s, state, display);
+            let current = tree(id, s, state, display, scope);
             let found = current["elements"]
                 .as_array()
                 .map(|elements| model::find(elements, args))

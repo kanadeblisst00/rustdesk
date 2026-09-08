@@ -26,8 +26,8 @@ async def verify(read, write):
         initialized = await session.initialize()
         assert initialized.serverInfo.name == "rustdesk-agent"
         listed = await session.list_tools()
-        assert len(listed.tools) == 43
-        assert len({t.name for t in listed.tools}) == 43
+        assert len(listed.tools) == 46
+        assert len({t.name for t in listed.tools}) == 46
         result = await session.call_tool("get_capabilities", {})
         assert not result.isError and result.structuredContent == {"fixture": True}
         failed = await session.call_tool("screenshot", {"session": "test"})
