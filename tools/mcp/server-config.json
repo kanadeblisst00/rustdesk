@@ -2,6 +2,6 @@
   "id_servers": ["removed-server.invalid:21116"],
   "relay_server": "removed-server.invalid:21117",
   "public_key": "[REMOVED_OLD_SERVER_PUBLIC_KEY]",
-  "always_relay": true,
+  "always_relay": false,
   "default_stun_servers": []
 }

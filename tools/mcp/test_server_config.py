@@ -83,7 +83,7 @@ class ServerConfigTest(unittest.TestCase):
             for option, value in [("custom-rendezvous-server", expected["id_servers"][0]),
                                   ("relay-server", expected["relay_server"]),
                                   ("key", expected["public_key"]),
-                                  ("force-always-relay", "Y")]:
+                                  ("force-always-relay", "N")]:
                 entry = f'("{option}".to_owned(), "{value}".to_owned()),'
                 self.assertIn(entry, patched)
                 for replacement in ("", entry.replace(value, "incorrect")):
@@ -96,7 +96,7 @@ class ServerConfigTest(unittest.TestCase):
         expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
         options = {"custom-rendezvous-server": expected["id_servers"][0],
                    "relay-server": expected["relay_server"], "key": expected["public_key"],
-                   "force-always-relay": "Y"}
+                   "force-always-relay": "N"}
         info = {"built_in_server": expected, "default_server_options": options}
         verify(native_config(info), expected)
         with self.assertRaises(ValueError):
@@ -106,9 +106,9 @@ class ServerConfigTest(unittest.TestCase):
                 with self.subTest(option=option, value=value), self.assertRaises(ValueError):
                     native_config({**info, "default_server_options": {**options, option: value}})
 
-    def test_relay_policy_must_be_enabled_in_manifest_and_binary(self):
+    def test_relay_policy_must_be_disabled_in_manifest_and_binary(self):
         expected = json.loads((ROOT / "tools/mcp/server-config.json").read_text())
-        for value in (None, False, "Y", 1):
+        for value in (None, True, "N", 0):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 actual = {**expected, "always_relay": value}
                 verify(actual, actual)

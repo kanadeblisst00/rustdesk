@@ -1815,7 +1815,7 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
                     onChanged: locked || isOptionFixed(kOptionForceAlwaysRelay)
                         ? null
                         : (value) async {
-                            // An empty value would restore the embedded relay default.
+                            // Keep an explicit value instead of depending on the embedded default.
                             await bind.mainSetOption(
                                 key: kOptionForceAlwaysRelay,
                                 value: value ? 'Y' : 'N');
