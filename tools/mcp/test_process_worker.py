@@ -14,7 +14,7 @@ EXECUTABLE = os.environ.get("RUSTDESK_MCP_TEST_EXECUTABLE")
 
 @unittest.skipUnless(EXECUTABLE, "set RUSTDESK_MCP_TEST_EXECUTABLE to a built MCP executable")
 class ProcessWorkerTest(unittest.TestCase):
-    def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False):
+    def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False, descendant=False):
         with tempfile.TemporaryDirectory(prefix="mcp-worker-") as directory:
             root = Path(directory)
             job = root / "job"
@@ -44,8 +44,9 @@ class ProcessWorkerTest(unittest.TestCase):
                 process.wait(timeout=5)
                 result = {"state": state, "stdout": (job / "stdout.log").read_bytes(),
                           "stderr": (job / "stderr.log").read_bytes()}
-                if timeout < 1000:
-                    time.sleep(0.8)
+                if descendant:
+                    self.assertTrue((root / "started").exists(), "Grandchild did not start; cleanup was not exercised")
+                    time.sleep(2)
                     self.assertFalse((root / "leaked").exists(), "Grandchild survived task cleanup")
                 return result
             finally:
@@ -68,10 +69,11 @@ class ProcessWorkerTest(unittest.TestCase):
         self.assertEqual(result["state"]["state"], "cancelled")
 
     def test_timeout_cleans_up_grandchild(self):
-        child = "import time,pathlib; time.sleep(.6); pathlib.Path('leaked').write_text('bad')"
+        child = ("import time,pathlib; pathlib.Path('started').write_text('ready'); "
+                 "time.sleep(2); pathlib.Path('leaked').write_text('bad')")
         result = self.run_worker(
             "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',%r]); time.sleep(60)" % child,
-            timeout=150)
+            timeout=1500, descendant=True)
         self.assertEqual(result["state"]["state"], "timed_out")
 
 

@@ -1,0 +1,278 @@
+{
+  "version": 1,
+  "targets": [
+    {
+      "name": "linux-x64",
+      "device_id": "REPLACE_LINUX_DEVICE",
+      "source_revision": "0000000000000000000000000000000000000000",
+      "auth": {
+        "password_env": "RUSTDESK_LINUX_PASSWORD"
+      },
+      "executables": [
+        "git",
+        "cmake",
+        "ctest"
+      ],
+      "preflight": [
+        {
+          "executable": "cmake",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "executable": "ctest",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "prepare": [
+        {
+          "executable": "git",
+          "args": [
+            "clone",
+            "--no-checkout",
+            "https://example.invalid/replace-with-your-project.git",
+            "{source}"
+          ]
+        },
+        {
+          "executable": "git",
+          "args": [
+            "-C",
+            "{source}",
+            "checkout",
+            "--detach",
+            "{revision}"
+          ]
+        }
+      ],
+      "build": [
+        {
+          "executable": "cmake",
+          "args": [
+            "-S",
+            "{source}",
+            "-B",
+            "{build}",
+            "-DCMAKE_BUILD_TYPE=Release"
+          ]
+        },
+        {
+          "executable": "cmake",
+          "args": [
+            "--build",
+            "{build}",
+            "--config",
+            "Release",
+            "--parallel",
+            "2"
+          ]
+        }
+      ],
+      "test": [
+        {
+          "executable": "ctest",
+          "args": [
+            "--test-dir",
+            "{build}",
+            "-C",
+            "Release",
+            "--output-on-failure",
+            "--no-tests=error",
+            "--output-junit",
+            "{reports}/tests.xml"
+          ],
+          "timeout_ms": 600000
+        }
+      ],
+      "artifacts": [
+        "reports/tests.xml"
+      ],
+      "screenshot_on_failure": false
+    },
+    {
+      "name": "windows-x64",
+      "device_id": "REPLACE_WINDOWS_DEVICE",
+      "source_revision": "0000000000000000000000000000000000000000",
+      "auth": {
+        "password_env": "RUSTDESK_WINDOWS_PASSWORD"
+      },
+      "executables": [
+        "git",
+        "cmake",
+        "ctest"
+      ],
+      "preflight": [
+        {
+          "executable": "cmake",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "executable": "ctest",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "prepare": [
+        {
+          "executable": "git",
+          "args": [
+            "clone",
+            "--no-checkout",
+            "https://example.invalid/replace-with-your-project.git",
+            "{source}"
+          ]
+        },
+        {
+          "executable": "git",
+          "args": [
+            "-C",
+            "{source}",
+            "checkout",
+            "--detach",
+            "{revision}"
+          ]
+        }
+      ],
+      "build": [
+        {
+          "executable": "cmake",
+          "args": [
+            "-S",
+            "{source}",
+            "-B",
+            "{build}",
+            "-DCMAKE_BUILD_TYPE=Release"
+          ]
+        },
+        {
+          "executable": "cmake",
+          "args": [
+            "--build",
+            "{build}",
+            "--config",
+            "Release",
+            "--parallel",
+            "2"
+          ]
+        }
+      ],
+      "test": [
+        {
+          "executable": "ctest",
+          "args": [
+            "--test-dir",
+            "{build}",
+            "-C",
+            "Release",
+            "--output-on-failure",
+            "--no-tests=error",
+            "--output-junit",
+            "{reports}/tests.xml"
+          ],
+          "timeout_ms": 600000
+        }
+      ],
+      "artifacts": [
+        "reports/tests.xml"
+      ],
+      "screenshot_on_failure": false
+    },
+    {
+      "name": "macos-arm64",
+      "device_id": "REPLACE_MACOS_DEVICE",
+      "source_revision": "0000000000000000000000000000000000000000",
+      "auth": {
+        "password_env": "RUSTDESK_MACOS_PASSWORD"
+      },
+      "executables": [
+        "git",
+        "cmake",
+        "ctest"
+      ],
+      "preflight": [
+        {
+          "executable": "cmake",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "executable": "ctest",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "prepare": [
+        {
+          "executable": "git",
+          "args": [
+            "clone",
+            "--no-checkout",
+            "https://example.invalid/replace-with-your-project.git",
+            "{source}"
+          ]
+        },
+        {
+          "executable": "git",
+          "args": [
+            "-C",
+            "{source}",
+            "checkout",
+            "--detach",
+            "{revision}"
+          ]
+        }
+      ],
+      "build": [
+        {
+          "executable": "cmake",
+          "args": [
+            "-S",
+            "{source}",
+            "-B",
+            "{build}",
+            "-DCMAKE_BUILD_TYPE=Release"
+          ]
+        },
+        {
+          "executable": "cmake",
+          "args": [
+            "--build",
+            "{build}",
+            "--config",
+            "Release",
+            "--parallel",
+            "2"
+          ]
+        }
+      ],
+      "test": [
+        {
+          "executable": "ctest",
+          "args": [
+            "--test-dir",
+            "{build}",
+            "-C",
+            "Release",
+            "--output-on-failure",
+            "--no-tests=error",
+            "--output-junit",
+            "{reports}/tests.xml"
+          ],
+          "timeout_ms": 600000
+        }
+      ],
+      "artifacts": [
+        "reports/tests.xml"
+      ],
+      "screenshot_on_failure": false
+    }
+  ]
+}

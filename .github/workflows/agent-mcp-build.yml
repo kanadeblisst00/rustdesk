@@ -66,8 +66,11 @@ jobs:
         run: |
           mkdir rustdesk-mcp-toolkit
           cp tools/mcp/stdio.py rustdesk-mcp-toolkit/
+          cp tools/mcp/build_matrix.py tools/mcp/build-matrix.example.json rustdesk-mcp-toolkit/
           cp tools/mcp/server-config.json rustdesk-mcp-toolkit/SERVER-CONFIG.json
           cp docs/agent-mcp.md rustdesk-mcp-toolkit/README.md
+          cp docs/agent-mcp-build-jobs.md rustdesk-mcp-toolkit/
+          python3 -c 'from pathlib import Path; p = Path("rustdesk-mcp-toolkit/agent-mcp-build-jobs.md"); p.write_text(p.read_text().replace("../tools/mcp/", ""), encoding="utf-8")'
           git rev-parse HEAD > rustdesk-mcp-toolkit/COMMIT.txt
           python3 -m zipfile -c rustdesk-mcp-toolkit.zip rustdesk-mcp-toolkit
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -293,6 +296,23 @@ jobs:
           grep -Fq "flutter-elinux build linux --verbose" build.py
           grep -Fq "build/linux/arm64/release/bundle/" build.py
           python build.py "${args[@]}" --skip-cargo
+      - name: Verify native command worker from the built application
+        if: runner.os != 'macOS' || !inputs.isolated_macos
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            worker=flutter/build/windows/x64/runner/Release/rustdeskmcp.exe
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            worker=flutter/build/macos/Build/Products/Release/RustDeskMCP.app/Contents/MacOS/service
+          elif [ "$MATRIX_PLATFORM" = "linux-arm64" ]; then
+            worker=flutter/build/linux/arm64/release/bundle/rustdeskmcp
+          else
+            worker=flutter/build/linux/x64/release/bundle/rustdeskmcp
+          fi
+          test -s "$worker"
+          export RUSTDESK_MCP_TEST_EXECUTABLE="$GITHUB_WORKSPACE/$worker"
+          python -m unittest discover -s tools/mcp -p test_process_worker.py -v
       - name: Package Windows self-extracting executable
         if: runner.os == 'Windows'
         shell: pwsh

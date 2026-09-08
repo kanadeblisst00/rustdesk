@@ -90,9 +90,43 @@ HTTP 为 `wait_for_event` 单独保留 4 个名额，普通请求保留 8 个名
 
 此入口提供主动连接远端的 MCP 控制端。被控机器仍需运行正常 RustDesk 服务、开启终端访问并完成原有认证；不会借此注册或启动被控服务。所有 `connect_device` 必须带 `headless:true`。无界面控制端可以连接远端桌面，但无法为被控端创建图形登录会话；GUI 测试仍需要远端实际可用的桌面。
 
+## 清单驱动的多平台构建与测试
+
+[build_matrix.py](../tools/mcp/build_matrix.py) 在控制端用 Python 3.9+ 标准库运行，复用同目录的 stdio.py。打包后的 toolkit 将两者与 [示例清单](../tools/mcp/build-matrix.example.json) 放在同一目录。被控端原生命令 worker 不需要 Python。
+
+在解压的 toolkit 目录执行时，去掉下方命令的 tools/mcp/ 前缀。
+
+先复制示例，替换设备 ID、仓库 URL、完整 Git 提交哈希及各平台命令路径。示例的 example.invalid 地址和全零哈希是占位符；不会自动选择分支最新版本。示例使用 CMake/CTest，目标机器需具备相应工具和支持 JUnit 输出的 CTest。其他项目可替换为 Cargo、Gradle、Flutter、pytest 等明确的可执行程序与参数数组。每台设备只能出现在一个目标中，避免多个 GUI 测试争用同一桌面。
+
+~~~sh
+python3 tools/mcp/build_matrix.py matrix.json --run-id project-001 --validate
+python3 tools/mcp/build_matrix.py matrix.json --run-id project-001 --parallel 3 --output mcp-runs
+~~~
+
+连接设置沿用 RUSTDESK_MCP_URL 和 RUSTDESK_MCP_TOKEN。auth.password_env、os_username_env、os_password_env 只记录控制端环境变量名，认证时读取对应值。远端密码与 OS 登录密码不写入清单或汇总报告；命令自身输出的敏感内容仍可能出现在原始日志中。认证最多等 60 秒，只提交一次密码，2FA 或人工批准未完成会明确失败。
+
+执行顺序如下，每台设备内部串行，不同设备最多并行 4 个，默认 3 个：
+
+1. 检查控制端能力，连接终端，采集远端环境，创建本次运行专用工作区。
+2. preflight 检查工具；prepare 准备源码；可选 bootstrap 安装该工作区依赖。声明了 bootstrap 时，启动必须显式传 --allow-bootstrap；没有该参数会在连接前退出。这是运行器的显式执行选项，清单中的其他命令仍须由使用者审阅。
+3. 执行 Git rev-parse HEAD，核对完整提交哈希，再封存源码。git_head_matched_at_prepare 只记录准备阶段的 Git HEAD 检查，不代表所有文件都是干净提交内容；源码文件指纹独立记录。
+4. 顺序执行 build 和 test 命令，要求明确成功退出，且封存源码未被修改。每个阶段最多 32 条命令；prepare、build、test 均须至少一条。测试框架需配置“无测试即失败”等自身验收条件，退出 0 不自动证明覆盖完整。
+5. 收集指定的产物/项目测试报告 SHA-256 清单；即使构建或测试失败，也尽力收集已有报告，并可按 screenshot_on_failure 采集失败时远端截图。截图失败另行记录，不覆盖原来的命令错误。
+6. 写入每目标的 target.json、逐任务 stdout/stderr 原始日志、总 summary.json 和 matrix.junit.xml；释放本次新建的连接。已存在的连接不主动关闭。远端工作区与任务保留，供恢复或显式清理。
+
+普通准备命令的 cwd 默认是工作区绝对根目录。build/test 使用 run_workspace_process，cwd 默认 build，须使用相对目录，例如 source 或 build。可执行路径、参数和 env 字符串支持替换 {root}、{source}、{build}、{artifacts}、{reports}、{revision}；不拼接 shell、不展开任意环境变量。清单 env 是对象，例如 {"CI":"1"}。bootstrap 可在 {build}/venv 创建虚拟环境；不要向已封存的 source 写构建缓存。
+
+恢复时保留相同清单、--run-id 和 --output，再运行同一命令。任务 ID 在提交前落盘；丢失回复只会重用原 ID，已有任务按磁盘状态续读，不重放已完成命令，不重新封存被修改的源码。同一运行目录由 OS 文件锁保护，控制端崩溃后自动释放。已记录任务若被远端删除则失败，不凭旧日志重新执行。需要重建时换新的运行 ID；原生服务的日志/工作区保留上限仍然适用。
+
+按 Ctrl+C 停止控制端后，不再提交新命令；已经提交的远端任务继续运行，等待当前 RPC 返回后写出报告。可用记录的 job_id 恢复，或调用 cancel_process 显式取消。未知状态不算成功；单机失败不会取消其他设备的任务。网络中断后由下一次同 ID 调用恢复，当前版本不在后台无限重连。
+
+默认只收集产物清单。运行器与 HTTP MCP **在同一台控制机、同一文件系统**时可加 --download-artifacts；要求使用 127.0.0.1 端点，SSH 转发到另一主机不满足条件。文件下载通过独立文件会话，等到匹配的 job_done 后核对长度与 SHA-256，再移入 downloads。每次使用独立临时路径，不自动覆盖文件；未完成或校验失败的临时文件留作排查。已验证的下载恢复时跳过。通过局域网访问另一台控制端时，请用返回的远端路径自行编排文件传输或在控制端运行此脚本。
+
+matrix.junit.xml 每台设备一条用例，反映整个流水线状态。项目内部的细粒度测试结果由测试命令生成并列入 artifacts，不把构建成功当成所有测试通过。GUI 测试应在 test 阶段调用项目已有的测试驱动，例如 Flutter integration_test、应用自带自动化入口或项目封装的浏览器测试；需要远端已登录且可用的图形桌面。截图是失败后的屏幕证据，不能单独判断控件操作成功；Mac/Linux 不因此获得 Windows 原生 UIA 能力。
+
 ## 验证与回归面
 
-本地 macOS ARM64 验证真实命令 stdout/stderr、Unicode 环境值、非零退出码、重复请求、过期心跳、超时、日志限额、取消及孙进程清理；原生 MCP 回归 24 项通过，独立协议 29 项通过。Windows 平台模块通过 `windows 0.61.1`、`x86_64-pc-windows-gnu` 的交叉类型检查，尚不等于 Windows 实机运行验收。
+本地 macOS ARM64 验证真实命令 stdout/stderr、Unicode 环境值、非零退出码、重复请求、过期心跳、超时、日志限额、取消及孙进程清理；原生 MCP 回归 30 项通过，独立协议 30 项通过（stable 与 Rust 1.75）。Windows 平台模块通过 `windows 0.61.1`、`x86_64-pc-windows-gnu` 的交叉类型检查，尚不等于 Windows 实机运行验收。
 
 新增实现集中于 `src/agent_mcp/process` 和 `libs/agent_mcp/src/process.rs`。已有运行路径的必要改动如下：
 
@@ -100,7 +134,7 @@ HTTP 为 `wait_for_event` 单独保留 4 个名额，普通请求保留 8 个名
 - `src/core_main.rs`：识别专用 worker 参数，在 GUI/服务初始化前执行任务。
 - `src/server/connection.rs`：仅授权终端接受私有字段 50002，并传递原有终端用户令牌。
 - `src/client/io_loop.rs`：分流终端私有扩展回复；其余协议消息继续原路径。
-- `libs/agent_mcp/src/catalog.rs`、`lib.rs`：注册六个工具；协议测试核对目录。
+- `libs/agent_mcp/src/catalog.rs`、`lib.rs`：注册命令、工作区和环境工具；协议测试核对目录。
 - `Cargo.toml`：启用既有 Windows 依赖的 JobObjects API，无新增生产依赖。
 
 `mcp` 关闭时不进入新路径。不修改 PTY、文件传输、现有 UIA 私有字段 50001、Flutter 或子模块。开始任务前工作区已有的文件会话关闭修复保持独立。
@@ -114,3 +148,5 @@ macOS 系统服务是独立的 `service` 程序，不能只在 Flutter 的 `core
 环境检查仅增加 `process/environment.rs`、各平台 Identity 的只读环境读取、协议目录和能力字段，不更改命令注入或用户令牌选择。测试确认发现文件不会执行文件，并使用真实临时目录读取磁盘容量；Windows 环境与磁盘 API 经过交叉类型检查，登录用户环境仍需 Windows 实机验证。
 
 后台入口集中于 `src/agent_mcp/daemon.rs`；`src/core_main.rs`、`src/lib.rs`、`src/service.rs` 仅增加参数分流，隔离版参数白名单放行控制端入口。普通启动不进入新路径。MCP 路由只在后台模式拒绝可见连接。测试在隔离子进程中启动真实 HTTP 监听，确认无需 Flutter、正确令牌可读能力、错误令牌被拒绝、可见连接被拒绝；另验证环境参数及令牌不进入错误文本。
+
+矩阵运行器新增独立的 tools/mcp/build_matrix.py、示例清单和回归测试；不改变现有桌面操作工具。测试覆盖并发、单机失败隔离、结果不确定时恢复原任务、日志字节续读、已删除任务拒绝重建、Git 版本不符、原样传参、凭据不写报告、产物下载校验和失败截图。原生 worker 的孙进程测试增加已启动标记，避免尚未启动孙进程就超时导致假通过。构建 workflow 只增加 toolkit 内容和构建产物的 worker 验证步骤；其他编译/打包步骤保持原样。该测试不建立 RustDesk 远程连接；Windows/Linux 真实远程认证、GUI 驱动与文件下载仍需部署后联调。
