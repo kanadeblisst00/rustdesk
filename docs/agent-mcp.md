@@ -46,15 +46,15 @@ git -C libs/hbb_common apply ../../.github/patches/agent-mcp-server.diff
 python3 tools/mcp/verify_server_config.py --source libs/hbb_common/src/config.rs
 ```
 
-同一补丁还将全局 `force-always-relay` 默认为 `Y`。普通 ID 连接（包括已有最近连接、GUI 与 MCP 会话）从首次请求就要求使用 RustDesk 中继，跳过 TCP/UDP/IPv6 打洞和 WebRTC 建连，不再先等待直连失败，也无需在 ID 后添加 `/r`。全局策略不写入单个设备的配置；设备卡片上的中继开关只控制该设备选项，取消它不会关闭全局策略。显式 IP 或 `域名:端口` 连接仍直接连接指定地址。`SERVER-CONFIG.json` 的 `always_relay` 和原生诊断会校验这一默认策略。
+同一补丁将全局 `force-always-relay` 默认为 `N`。普通 ID 连接（包括已有最近连接、GUI 与 MCP 会话）会先根据「通用」页已启用的 TCP/UDP/IPv6/WebRTC 开关探测直连；直连成功时优先使用直连，所有可用直连方式失败后再请求 RustDesk 中继。显式 IP 或 `域名:端口` 连接仍直接连接指定地址。`SERVER-CONFIG.json` 的 `always_relay` 和原生诊断会校验这一默认策略。
 
-在 MCP 桌面版的「设置 → 网络」关闭「强制走中继连接」，即可切换为自动连接：根据「通用」页已启用的 TCP/UDP/IPv6/WebRTC 开关尝试直连，失败后使用中继。关闭时保存显式 `N`，重启后仍保持自动模式；重新开启则恢复默认中继。切换对后续新建会话生效，已有会话需关闭后重新连接。单个设备已保存的强制中继选项、`/r` 和代理限制仍然有效。自建服务器的 WebRTC 默认关闭，需要使用时在「通用」页单独启用。
+在 MCP 桌面版的「设置 → 网络」开启「强制走中继连接」可跳过直连探测，关闭则恢复自动连接。开关会保存显式 `Y` 或 `N`，重启后保持选择；切换对后续新建会话生效，已有会话需关闭后重新连接。单个设备已保存的强制中继选项、ID 后缀 `/r` 和代理限制仍然有效。自建服务器的 WebRTC 默认关闭，需要使用时在「通用」页单独启用。
 
 TCP 打洞和 WebRTC 信令使用所配置的自建 ID 服务器，不依赖 RustDesk 官方 ID 服务；WebRTC 还要求两端客户端和服务端支持对应的信令。私服补丁同时清空 `hbb_common/src/webrtc.rs` 的公共 STUN 默认列表：未配置 ICE、ICE 配置无效或仅配置 TURN 时，都不会补入 Google、Cloudflare 等公共 STUN。应用层 IPv6/STUN 探测在默认列表为空时跳过，避免 DNS 查询和空任务列表错误。`SERVER-CONFIG.json` 与原生诊断的 `default_stun_servers` 必须为空。
 
 当前尚未部署自建 STUN/TURN，因此不将 ID 服务的 `21116` 端口伪装成 STUN/TURN 服务。自动模式保留 TCP 打洞和 WebRTC 可直接到达的候选地址，跨 NAT 的 WebRTC 成功率可能受限，失败后回退 RustDesk 中继。后续部署自建 STUN/TURN 后，可通过 `ice-servers` 显式配置其服务地址；仅配置自建 TURN 也不会重新启用公共 STUN。已保存的显式 ICE 配置仍会被读取，升级已有配置时应移除其中的公共服务地址；被控端也需使用相同私服策略，才能避免它自身查询公共 STUN。
 
-这些是新配置的默认值，不强制覆盖用户已保存的服务器设置；仍需通过真实连接验证服务器可达性和公钥匹配。中继连接仍需 ID 服务器协调、远端在线及正常认证；全局强制中继开启时，中继失败不会退回点对点直连。隔离版只作为控制端，不启动被控端注册，不能以首页「就绪」作为验收标准。未应用补丁的本地构建保持原服务器配置与默认连接策略。已安装的旧包需重新构建后更新才能生效。
+这些是新配置的默认值，不强制覆盖用户已保存的服务器设置；已保存为 `Y` 的全局或设备级强制中继选项仍会继续生效。仍需通过真实连接验证服务器可达性和公钥匹配。中继连接需要 ID 服务器协调、远端在线及正常认证；显式开启强制中继时，中继失败不会退回点对点直连。隔离版只作为控制端，不启动被控端注册，不能以首页「就绪」作为验收标准。未应用补丁的本地构建保持原服务器配置与默认连接策略。已安装的旧包需重新构建后更新才能生效。
 
 ### 与官方版同时安装
 
@@ -254,7 +254,7 @@ uv run --with mcp==1.28.1 --python 3.12 python tools/mcp/sdk_interop.py libs/age
 
 热键回归：`cargo test --locked --features mcp --lib agent_mcp::desktop::hotkey::tests`，覆盖 `Meta+r`、`Ctrl+c`、`Ctrl+Shift+c`、`Alt+Tab`、单键、其他平台及部分失败后的按键释放。测试检查真实输入入口产生的协议消息，不注入本地键盘。真实 Windows 验收还需确认 `Meta+r` 打开“运行”窗口，再用 Escape 关闭，不能仅以 `queued:true` 或开始菜单出现判定成功。
 
-默认中继策略回归：运行 `cargo test --locked --features mcp --lib client::relay_policy_tests`。测试在独立子进程中覆盖五种会话类型、显式中继与全局策略的组合，并用 loopback 模拟服务器返回直连地址和中继拒绝，确认不会发起直连或回退直连；不连接真实远端。
+连接策略回归：运行 `cargo test --locked --features mcp --lib client::relay_policy_tests`。测试在独立子进程中覆盖五种会话类型、显式中继与全局策略的组合，并用 loopback 分别确认强制模式不会发起直连、自动模式会在直连失败后请求中继；不连接真实远端。
 
 2026-09-06 本机验证记录（macOS arm64）：整合上游 WebRTC 更新后，`cargo build --locked --features mcp --lib` 成功生成 ARM64 Debug 动态库，MCP 关闭时的 Flutter 原生检查通过。独立 Rust 测试 13 项在 Rust 1.75.0 和 1.98.1 上通过，独立 crate 严格 Clippy 通过；Python 测试 5 项与官方 SDK 两种传输测试通过。Flutter 3.24.5 新设置组件零诊断，既有设置页只有原有 5 条 info。
 

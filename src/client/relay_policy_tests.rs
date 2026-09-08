@@ -33,14 +33,14 @@ impl Drop for OptionOverride {
 }
 
 #[tokio::test]
-async fn global_relay_policy_applies_to_all_session_types_without_saving_peer_preference() {
+async fn relay_policy_preserves_forced_mode_and_automatic_fallback() {
     // Configuration is process-wide; keep these overrides out of other concurrent tests.
     if std::env::var_os("RUSTDESK_RELAY_TEST_CHILD").is_none() {
         let output = tokio::task::spawn_blocking(|| {
             std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "client::relay_policy_tests::global_relay_policy_applies_to_all_session_types_without_saving_peer_preference",
+                    "client::relay_policy_tests::relay_policy_preserves_forced_mode_and_automatic_fallback",
                     "--test-threads=1",
                 ])
                 .env("RUSTDESK_RELAY_TEST_CHILD", "1")
@@ -106,7 +106,6 @@ async fn global_relay_policy_applies_to_all_session_types_without_saving_peer_pr
             }
         }
     }
-    let _relay = OptionOverride::new(&config::OVERWRITE_SETTINGS, "force-always-relay", "Y");
     let _ws = OptionOverride::new(
         &config::OVERWRITE_SETTINGS,
         keys::OPTION_ALLOW_WEBSOCKET,
@@ -117,17 +116,34 @@ async fn global_relay_policy_applies_to_all_session_types_without_saving_peer_pr
         keys::OPTION_ENABLE_TCP_PUNCH,
         "Y",
     );
-    let session = Session::<crate::flutter::FlutterHandler>::default();
-    session.lc.write().unwrap().initialize(
-        id.clone(),
-        ConnType::DEFAULT_CONN,
-        None,
-        false,
-        None,
-        None,
-        None,
-    );
-    assert_relay_refusal_does_not_attempt_direct(id, session).await;
+    {
+        let _relay = OptionOverride::new(&config::OVERWRITE_SETTINGS, "force-always-relay", "Y");
+        let session = Session::<crate::flutter::FlutterHandler>::default();
+        session.lc.write().unwrap().initialize(
+            id.clone(),
+            ConnType::DEFAULT_CONN,
+            None,
+            false,
+            None,
+            None,
+            None,
+        );
+        assert_relay_refusal_does_not_attempt_direct(id.clone(), session).await;
+    }
+    {
+        let _relay = OptionOverride::new(&config::OVERWRITE_SETTINGS, "force-always-relay", "N");
+        let session = Session::<crate::flutter::FlutterHandler>::default();
+        session.lc.write().unwrap().initialize(
+            id.clone(),
+            ConnType::DEFAULT_CONN,
+            None,
+            false,
+            None,
+            None,
+            None,
+        );
+        assert_direct_failure_falls_back_to_relay(id, session).await;
+    }
 }
 
 async fn assert_relay_refusal_does_not_attempt_direct(
@@ -192,5 +208,67 @@ async fn assert_relay_refusal_does_not_attempt_direct(
             assert!(error.to_string().contains("relay-policy-test-refusal"), "{error}");
         }
         _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("Relay test timed out"),
+    }
+}
+
+async fn assert_direct_failure_falls_back_to_relay(
+    id: String,
+    session: Session<crate::flutter::FlutterHandler>,
+) {
+    use hbb_common::tcp::FramedStream;
+    use tokio::net::TcpListener;
+
+    let rendezvous = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable_direct = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let direct_addr = unavailable_direct.local_addr().unwrap();
+    drop(unavailable_direct);
+    let rendezvous_addr = rendezvous.local_addr().unwrap().to_string();
+    let server = async {
+        let (socket, addr) = rendezvous.accept().await.unwrap();
+        let mut socket = FramedStream::from(socket, addr);
+        let bytes = socket.next().await.unwrap().unwrap();
+        let request = RendezvousMessage::parse_from_bytes(&bytes).unwrap();
+        assert!(request.has_punch_hole_request());
+        assert!(!request.punch_hole_request().force_relay);
+        let mut response = RendezvousMessage::new();
+        response.set_punch_hole_response(PunchHoleResponse {
+            socket_addr: AddrMangle::encode(direct_addr).into(),
+            relay_server: "127.0.0.1:9".into(),
+            ..Default::default()
+        });
+        socket.send(&response).await.unwrap();
+
+        let (socket, addr) = rendezvous.accept().await.unwrap();
+        let mut socket = FramedStream::from(socket, addr);
+        let bytes = socket.next().await.unwrap().unwrap();
+        let request = RendezvousMessage::parse_from_bytes(&bytes).unwrap();
+        assert!(request.has_request_relay());
+        let mut response = RendezvousMessage::new();
+        response.set_relay_response(RelayResponse {
+            refuse_reason: "automatic-relay-fallback-test-refusal".into(),
+            ..Default::default()
+        });
+        socket.send(&response).await.unwrap();
+    };
+    let client = Client::_start_inner(
+        id,
+        String::new(),
+        String::new(),
+        ConnType::DEFAULT_CONN,
+        session,
+        (None, None),
+        None,
+        None,
+        None,
+        rendezvous_addr,
+        Vec::new(),
+        true,
+    );
+    tokio::select! {
+        (_, result) = async { tokio::join!(server, client) } => {
+            let error = result.err().expect("The test relay must refuse the connection");
+            assert!(error.to_string().contains("automatic-relay-fallback-test-refusal"), "{error}");
+        }
+        _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("Automatic relay fallback test timed out"),
     }
 }

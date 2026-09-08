@@ -38,13 +38,22 @@ def source_config(source, webrtc_source):
 
 
 def verify_default_options(options, expected):
+    always_relay = expected.get("always_relay")
+    if not isinstance(always_relay, bool):
+        raise ValueError("always_relay must be a boolean")
     actual = {
         "id_servers": [options.get("custom-rendezvous-server")],
         "relay_server": options.get("relay-server"),
         "public_key": options.get("key"),
-        "always_relay": options.get("force-always-relay") == "Y",
+        "force-always-relay": options.get("force-always-relay"),
     }
-    if actual != {key: expected.get(key) for key in actual}:
+    wanted = {
+        "id_servers": expected.get("id_servers"),
+        "relay_server": expected.get("relay_server"),
+        "public_key": expected.get("public_key"),
+        "force-always-relay": "Y" if always_relay else "N",
+    }
+    if actual != wanted:
         raise ValueError("Server setting defaults differ from the embedded server configuration")
 
 
@@ -57,8 +66,8 @@ def native_config(info):
 def verify(actual, expected):
     if len(base64.b64decode(expected["public_key"], validate=True)) != 32:
         raise ValueError("Expected a 32-byte Ed25519 public key")
-    if actual.get("always_relay") is not True:
-        raise ValueError("Private server builds must connect via relay by default")
+    if actual.get("always_relay") is not False:
+        raise ValueError("Private server builds must try direct connections before relay fallback")
     if actual.get("default_stun_servers") != []:
         raise ValueError("Private server builds must not include public STUN fallbacks")
     if actual != expected:

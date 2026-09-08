@@ -2,6 +2,6 @@
   "id_servers": ["r5.ikanade.cn:21116"],
   "relay_server": "r5.ikanade.cn:21117",
   "public_key": "avD+qUiwBe013hPPKQjCO81ekJTDoqkxmxDXPkRMAe8=",
-  "always_relay": true,
+  "always_relay": false,
   "default_stun_servers": []
 }

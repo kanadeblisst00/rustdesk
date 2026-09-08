@@ -10,7 +10,7 @@ diff --git a/src/config.rs b/src/config.rs
 +        ("custom-rendezvous-server".to_owned(), "r5.ikanade.cn:21116".to_owned()),
 +        ("relay-server".to_owned(), "r5.ikanade.cn:21117".to_owned()),
 +        ("key".to_owned(), "avD+qUiwBe013hPPKQjCO81ekJTDoqkxmxDXPkRMAe8=".to_owned()),
-+        ("force-always-relay".to_owned(), "Y".to_owned()),
++        ("force-always-relay".to_owned(), "N".to_owned()),
 +    ]));
      pub static ref OVERWRITE_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
      pub static ref DEFAULT_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();

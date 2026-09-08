@@ -237,6 +237,12 @@ pub(super) fn call(
     let cursor = state.events.cursor();
     match name {
         "disconnect_device" => {
+            // Notify the owning UI before session_close removes its event sink.
+            s.push_event_to(
+                "agent_close_session",
+                &[("session", id.to_string())],
+                &[&id],
+            );
             flutter_ffi::session_close(id);
             states().lock().unwrap().remove(&id);
             return Ok(success(json!({"disconnected":true})));
@@ -526,6 +532,95 @@ fn file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnect_notifies_only_the_target_before_removing_it() {
+        if std::env::var_os("RUSTDESK_MCP_DISCONNECT_TEST_CHILD").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "agent_mcp::session::tests::disconnect_notifies_only_the_target_before_removing_it",
+                    "--test-threads=1",
+                ])
+                .env("RUSTDESK_MCP_DISCONNECT_TEST_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use hbb_common::config;
+        *config::APP_NAME.write().unwrap() =
+            format!("RustDeskDisconnectTest-{}", SessionID::new_v4());
+        config::OVERWRITE_LOCAL_SETTINGS.write().unwrap().extend([
+            ("enable-agent-mcp".into(), "Y".into()),
+            ("agent-mcp-devices".into(), String::new()),
+        ]);
+        let read_events = |state: &SessionState| {
+            state.events.read(0, None, Duration::ZERO, || true).unwrap()["events"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let desktop_id = SessionID::new_v4();
+        let desktop = FlutterSession::default();
+        let (desktop_tx, mut desktop_rx) = tokio::sync::mpsc::unbounded_channel();
+        *desktop.sender.write().unwrap() = Some(desktop_tx);
+        sessions::insert_session(desktop_id, ConnType::DEFAULT_CONN, desktop.clone());
+        let desktop_state = track(desktop_id, false).unwrap();
+
+        for kind in [ConnType::FILE_TRANSFER, ConnType::TERMINAL] {
+            let s = FlutterSession::default();
+            s.lc.write().unwrap().conn_type = kind;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            *s.sender.write().unwrap() = Some(tx);
+            let first = SessionID::new_v4();
+            let second = SessionID::new_v4();
+            sessions::insert_session(first, kind, s.clone());
+            sessions::insert_session(second, kind, s.clone());
+            let first_state = track(first, false).unwrap();
+            let second_state = track(second, false).unwrap();
+
+            let result = call(first, &s, &first_state, "disconnect_device", &Map::new()).unwrap();
+            assert_eq!(result["structuredContent"]["disconnected"], true);
+            let events = read_events(&first_state);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0]["type"], "agent_close_session");
+            assert_eq!(events[0]["data"]["session"], first.to_string());
+            assert!(read_events(&second_state).is_empty());
+            assert!(sessions::get_session_by_session_id(&first).is_none());
+            assert!(sessions::get_session_by_session_id(&second).is_some());
+            assert!(!states().lock().unwrap().contains_key(&first));
+            assert!(rx.try_recv().is_err());
+
+            call(second, &s, &second_state, "disconnect_device", &Map::new()).unwrap();
+            assert_eq!(read_events(&second_state)[0]["type"], "agent_close_session");
+            assert!(matches!(rx.try_recv().unwrap(), Data::Close));
+            assert!(sessions::get_session_by_session_id(&second).is_none());
+            assert_eq!(list().len(), 1);
+            assert_eq!(list()[0]["session"], desktop_id.to_string());
+            assert!(read_events(&desktop_state).is_empty());
+            assert!(desktop_rx.try_recv().is_err());
+        }
+        call(
+            desktop_id,
+            &desktop,
+            &desktop_state,
+            "disconnect_device",
+            &Map::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            read_events(&desktop_state)[0]["type"],
+            "agent_close_session"
+        );
+        assert!(matches!(desktop_rx.try_recv().unwrap(), Data::Close));
+        assert!(list().is_empty());
+    }
 
     #[test]
     fn visible_connection_preserves_kind_peer_and_relay() {
