@@ -124,10 +124,10 @@ fn run(check: bool) -> Result<(), String> {
         "{}",
         json!({"state":"listening","endpoint":endpoint,"headless_required":true})
     );
-    while enabled() {
+    while enabled() && !super::lifecycle::stopping() {
         std::thread::sleep(Duration::from_millis(250));
     }
-    super::cleanup();
+    super::lifecycle::shutdown();
     Ok(())
 }
 
