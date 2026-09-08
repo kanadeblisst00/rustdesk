@@ -46,7 +46,7 @@ fn wide(path: &OsStr) -> Vec<u16> {
     path.encode_wide().chain(Some(0)).collect()
 }
 
-pub(super) fn replace(from: &Path, to: &Path) -> Result<(), String> {
+pub(in super::super) fn replace(from: &Path, to: &Path) -> Result<(), String> {
     unsafe {
         MoveFileExW(
             PCWSTR(wide(from.as_os_str()).as_ptr()),
@@ -57,7 +57,7 @@ pub(super) fn replace(from: &Path, to: &Path) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-pub(super) struct Identity {
+pub(in super::super) struct Identity {
     token: Option<usize>,
 }
 impl Identity {
@@ -249,7 +249,7 @@ impl Drop for Identity {
         }
     }
 }
-pub(super) struct Impersonation(bool);
+pub(in super::super) struct Impersonation(bool);
 impl Drop for Impersonation {
     fn drop(&mut self) {
         if self.0 && unsafe { RevertToSelf() }.is_err() {
@@ -259,7 +259,7 @@ impl Drop for Impersonation {
     }
 }
 
-pub(super) struct Child {
+pub(in super::super) struct Child {
     pub process: std::process::Child,
     job: Handle,
     stopped: bool,
@@ -345,7 +345,7 @@ impl Drop for Child {
     }
 }
 
-pub(super) struct Reader<T>(T);
+pub(in super::super) struct Reader<T>(T);
 impl<T> Reader<T> {
     pub fn new(pipe: T) -> Result<Self, String> {
         Ok(Self(pipe))
