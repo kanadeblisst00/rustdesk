@@ -1,5 +1,6 @@
 mod actions;
 mod connection_queue;
+mod lifecycle;
 pub(crate) mod daemon;
 mod desktop;
 #[cfg(not(feature = "mcp-isolated"))]
@@ -93,7 +94,7 @@ pub fn local_option(key: &str) -> Option<String> {
 /// Application entry point, called only by the desktop's main event stream.
 pub fn start() {
     let mut started = STARTED.lock().unwrap();
-    if *started {
+    if *started || lifecycle::stopping() {
         return;
     }
     match std::thread::Builder::new()
@@ -111,7 +112,7 @@ pub fn start() {
                     return;
                 }
             };
-            runtime.block_on(async {
+            let run = async {
                 loop {
                     if !enabled() {
                         *STATUS.lock().unwrap() = "Stopped".into();
@@ -142,7 +143,7 @@ pub fn start() {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     }
-                    match tokio::net::TcpListener::bind(address).await {
+                    match rustdesk_agent_mcp::http::bind(address).await {
                         Ok(listener) => {
                             *STATUS.lock().unwrap() = format!("Listening on http://{address}/mcp");
                             let server = Arc::new(Server::new(Arc::new(DesktopBackend { address })));
@@ -159,9 +160,23 @@ pub fn start() {
                     }
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
+            };
+            runtime.block_on(async {
+                tokio::select! {
+                    _ = lifecycle::cancelled() => {},
+                    _ = run => {},
+                }
             });
+            cleanup();
+            // Dropping the runtime closes accepted sockets, including incomplete
+            // HTTP requests that cannot finish a graceful shutdown by themselves.
+            runtime.shutdown_timeout(Duration::from_secs(1));
+            *STATUS.lock().unwrap() = "Stopped".into();
         }) {
-        Ok(_) => *started = true,
+        Ok(thread) => {
+            lifecycle::remember(thread);
+            *started = true;
+        }
         Err(e) => {
             *STATUS.lock().unwrap() = format!("MCP thread: {e}");
             log::error!("Agent MCP thread: {e}");
@@ -184,7 +199,7 @@ struct DesktopBackend {
 
 impl Backend for DesktopBackend {
     fn token(&self) -> Option<String> {
-        (enabled() && listen_address() == Ok(self.address))
+        (!lifecycle::stopping() && enabled() && listen_address() == Ok(self.address))
             .then(|| LocalConfig::get_option(TOKEN))
             .filter(|token| rustdesk_agent_mcp::http::valid_token(token))
     }
@@ -299,7 +314,7 @@ impl Backend for DesktopBackend {
 }
 
 fn ensure_enabled() -> Result<(), String> {
-    if enabled() {
+    if enabled() && !lifecycle::stopping() {
         Ok(())
     } else {
         Err("MCP is disabled".into())

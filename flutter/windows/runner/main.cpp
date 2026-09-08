@@ -179,6 +179,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     ::DispatchMessage(&msg);
   }
 
+  auto mcp_shutdown = reinterpret_cast<void (*)()>(
+      GetProcAddress(hInstance, "rustdesk_mcp_shutdown"));
+  if (mcp_shutdown) {
+    mcp_shutdown();
+  }
   ::CoUninitialize();
   return EXIT_SUCCESS;
 }

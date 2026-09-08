@@ -80,6 +80,49 @@ class ProcessWorkerTest(unittest.TestCase):
             timeout=1500, descendant=True)
         self.assertEqual(result["state"]["state"], "timed_out")
 
+    def test_cancel_cleans_up_grandchild(self):
+        child = ("import time,pathlib; pathlib.Path('started').write_text('ready'); "
+                 "time.sleep(2); pathlib.Path('leaked').write_text('bad')")
+        result = self.run_worker(
+            "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',%r]); time.sleep(60)" % child,
+            cancel=True, descendant=True)
+        self.assertEqual(result["state"]["state"], "cancelled")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows Job Object cleanup")
+    def test_worker_termination_cleans_up_process_tree(self):
+        with tempfile.TemporaryDirectory(prefix="mcp-worker-exit-") as directory:
+            root = Path(directory)
+            job = root / "job"
+            job.mkdir(mode=0o700)
+            child = ("import time,pathlib; pathlib.Path('started').write_text('ready'); "
+                     "time.sleep(2); pathlib.Path('leaked').write_text('bad')")
+            code = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',%r]); time.sleep(60)" % child
+            (job / "request.json").write_text(json.dumps({
+                "job_id": "exit-test", "executable": sys.executable,
+                "args": ["-c", code], "cwd": str(root), "timeout_ms": 30000,
+            }), encoding="utf-8")
+            (job / "state.json").write_text(json.dumps({
+                "job_id": "exit-test", "state": "starting", "exit_code": None,
+                "updated_at_ms": int(time.time() * 1000),
+            }), encoding="utf-8")
+            process = subprocess.Popen([EXECUTABLE, "--mcp-process-worker", str(job)],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 10
+                while not (root / "started").is_file():
+                    self.assertIsNone(process.poll(), "Worker exited before its grandchild started")
+                    self.assertLess(time.monotonic(), deadline, "Grandchild did not start")
+                    time.sleep(0.02)
+                process.kill()
+                process.wait(timeout=5)
+                time.sleep(2.5)
+                self.assertFalse((root / "leaked").exists(), "Worker exit left its process tree alive")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()
