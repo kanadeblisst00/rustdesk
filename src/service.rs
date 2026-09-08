@@ -22,6 +22,10 @@ fn main() {
     }
     crate::common::load_custom_client();
     hbb_common::init_log(false, "service");
+    #[cfg(feature = "mcp")]
+    if librustdesk::mcp_server_requested() {
+        return;
+    }
     crate::start_os_service();
 }
 
