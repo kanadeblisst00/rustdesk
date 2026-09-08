@@ -412,10 +412,6 @@ class FfiModel with ChangeNotifier {
         parent.target?.serverModel.setShowElevation(show);
       } else if (name == 'cancel_msgbox') {
         cancelMsgBox(evt, sessionId);
-      } else if (name == 'agent_close_session') {
-        if (evt['session'] == sessionId.toString()) {
-          closeConnection(id: peerId);
-        }
       } else if (name == 'switch_back') {
         final peer_id = evt['peer_id'].toString();
         await bind.sessionSwitchSides(sessionId: sessionId);
