@@ -61,6 +61,62 @@ pub(super) struct Identity {
     token: Option<usize>,
 }
 impl Identity {
+    pub fn environment(
+        &self,
+    ) -> Result<
+        (
+            std::collections::BTreeMap<String, String>,
+            serde_json::Value,
+        ),
+        String,
+    > {
+        if self.token.is_none() {
+            let vars: std::collections::BTreeMap<String, String> = std::env::vars_os()
+                .filter_map(|(key, value)| {
+                    Some((
+                        key.into_string().ok()?.to_ascii_uppercase(),
+                        value.into_string().ok()?,
+                    ))
+                })
+                .collect();
+            let user = serde_json::json!({"name":vars.get("USERNAME"),"domain":vars.get("USERDOMAIN"),"identity_source":"authorized terminal process"});
+            return Ok((vars, user));
+        }
+        let mut environment = std::ptr::null_mut();
+        unsafe {
+            CreateEnvironmentBlock(&mut environment, self.token.map(|t| HANDLE(t as _)), false)
+        }
+        .map_err(|e| e.to_string())?;
+        let result = (|| {
+            let mut vars = std::collections::BTreeMap::new();
+            let mut offset = 0;
+            let pointer = environment as *const u16;
+            while unsafe { *pointer.add(offset) } != 0 {
+                let start = offset;
+                while unsafe { *pointer.add(offset) } != 0 {
+                    offset += 1;
+                    if offset > 262144 {
+                        return Err("User environment exceeds size limit".into());
+                    }
+                }
+                let line = String::from_utf16_lossy(unsafe {
+                    std::slice::from_raw_parts(pointer.add(start), offset - start)
+                });
+                if let Some((key, value)) = line.split_once('=') {
+                    if !key.is_empty() {
+                        vars.insert(key.to_ascii_uppercase(), value.to_owned());
+                    }
+                }
+                offset += 1;
+            }
+            let user = serde_json::json!({"name":vars.get("USERNAME"),"domain":vars.get("USERDOMAIN"),"identity_source":if self.token.is_some(){"authorized terminal logon token"}else{"authorized terminal process"}});
+            Ok((vars, user))
+        })();
+        if let Err(e) = unsafe { DestroyEnvironmentBlock(environment) } {
+            hbb_common::log::warn!("Destroy environment probe: {e}");
+        }
+        result
+    }
     pub fn new(token: Option<crate::terminal_service::UserToken>) -> Result<Self, String> {
         let token = if let Some(token) = token {
             let mut duplicate = HANDLE::default();

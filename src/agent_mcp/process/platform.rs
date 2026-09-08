@@ -13,6 +13,23 @@ pub(super) fn replace(from: &std::path::Path, to: &std::path::Path) -> Result<()
 pub(super) struct Identity;
 #[cfg(unix)]
 impl Identity {
+    pub fn environment(
+        &self,
+    ) -> Result<
+        (
+            std::collections::BTreeMap<String, String>,
+            serde_json::Value,
+        ),
+        String,
+    > {
+        let vars = std::env::vars_os()
+            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+            .collect();
+        Ok((
+            vars,
+            serde_json::json!({"effective_uid":unsafe { hbb_common::libc::geteuid() },"effective_gid":unsafe { hbb_common::libc::getegid() },"identity_source":"authorized terminal process"}),
+        ))
+    }
     pub fn new(_: Option<crate::terminal_service::UserToken>) -> Result<Self, String> {
         Ok(Self)
     }
