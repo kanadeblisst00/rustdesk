@@ -27,23 +27,33 @@ pub fn tools() -> Vec<Value> {
 }
 
 pub fn is_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "run_process"
-            | "get_process_status"
-            | "list_processes"
-            | "read_process_output"
-            | "cancel_process"
-            | "remove_process"
-    )
+    crate::workspace::is_tool(name)
+        || matches!(
+            name,
+            "run_process"
+                | "get_process_status"
+                | "list_processes"
+                | "read_process_output"
+                | "cancel_process"
+                | "remove_process"
+        )
 }
 
 pub fn validate(operation: &str, arguments: &Value) -> Result<(), String> {
     let tool = tools()
         .into_iter()
+        .chain(crate::workspace::tools())
         .find(|t| t["name"] == operation)
         .ok_or("Unknown process operation")?;
     crate::catalog::validate(&tool["inputSchema"], arguments, "arguments")?;
+    if let Some(id) = arguments.get("workspace_id").and_then(Value::as_str) {
+        if !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err("Invalid workspace_id".into());
+        }
+    }
     if let Some(id) = arguments.get("job_id").and_then(Value::as_str) {
         if !id
             .bytes()

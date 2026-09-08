@@ -190,3 +190,82 @@ fn cancelling_kills_grandchildren_before_they_write() {
     std::thread::sleep(Duration::from_millis(1200));
     assert!(!temp.0.join("marker").exists());
 }
+
+#[test]
+fn workspace_seals_sources_and_rejects_conflicts_and_path_escapes() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let request = json!({"workspace_id":"project","source_revision":"commit-123"});
+    let created = workspace::call(&store, "create_workspace", &request, |_| panic!()).unwrap();
+    let source = PathBuf::from(created["paths"]["source"].as_str().unwrap());
+    std::fs::write(source.join("main.txt"), "source version one").unwrap();
+    let sealed = workspace::call(&store, "seal_workspace", &request, |_| panic!()).unwrap();
+    assert_eq!(sealed["source"]["entries"], 1);
+    assert_eq!(store.list().unwrap()["jobs"].as_array().unwrap().len(), 0);
+    assert!(workspace::call(
+        &store,
+        "create_workspace",
+        &json!({"workspace_id":"project","source_revision":"other"}),
+        |_| panic!()
+    )
+    .is_err());
+    let run = json!({"workspace_id":"project","job_id":"build","session":"test","executable":"test","cwd":"../escape"});
+    assert!(workspace::call(&store, "run_workspace_process", &run, |_| panic!()).is_err());
+    let mut run = run;
+    run["cwd"] = json!("build");
+    std::fs::write(source.join("main.txt"), "changed").unwrap();
+    assert!(workspace::call(&store, "run_workspace_process", &run, |_| panic!()).is_err());
+    assert!(!store.directory("build").unwrap().exists());
+    workspace::call(&store, "seal_workspace", &request, |_| panic!()).unwrap();
+    workspace::call(&store, "run_workspace_process", &run, |_| Ok(())).unwrap();
+    assert!(workspace::call(&store, "seal_workspace", &request, |_| panic!()).is_err());
+    assert!(workspace::call(&store, "remove_workspace", &request, |_| panic!()).is_err());
+    let mut second = run.clone();
+    second["job_id"] = json!("second");
+    assert!(workspace::call(&store, "run_workspace_process", &second, |_| panic!()).is_err());
+    assert!(!store.directory("second").unwrap().exists());
+    workspace::call(&store, "run_workspace_process", &run, |_| {
+        panic!("idempotent retry launched")
+    })
+    .unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn workspace_commands_release_lease_and_artifacts_are_bound_to_latest_job() {
+    use sha2::{Digest, Sha256};
+    let temp = Temp::new();
+    let store = temp.store();
+    let workspace_args = json!({"workspace_id":"project","source_revision":"commit-123"});
+    let created =
+        workspace::call(&store, "create_workspace", &workspace_args, |_| panic!()).unwrap();
+    let source = PathBuf::from(created["paths"]["source"].as_str().unwrap());
+    std::fs::write(source.join("main.txt"), "source").unwrap();
+    workspace::call(&store, "seal_workspace", &workspace_args, |_| panic!()).unwrap();
+    let mut run = shell_spec("build", "printf artifact > ../artifacts/app.bin");
+    run["workspace_id"] = json!("project");
+    run["cwd"] = json!("build");
+    workspace::call(&store, "run_workspace_process", &run, |_| Ok(())).unwrap();
+    worker::run(&store.directory("build").unwrap()).unwrap();
+    assert_eq!(store.status("build").unwrap()["source_unchanged"], true);
+    let args = json!({"workspace_id":"project","job_id":"build","paths":["artifacts/app.bin"]});
+    let manifest = workspace::call(&store, "get_artifact_manifest", &args, |_| panic!()).unwrap();
+    assert_eq!(
+        manifest["files"][0]["sha256"],
+        format!("{:x}", Sha256::digest(b"artifact"))
+    );
+    let mut escaped = args.clone();
+    escaped["paths"] = json!(["artifacts/../../outside"]);
+    assert!(workspace::call(&store, "get_artifact_manifest", &escaped, |_| panic!()).is_err());
+    std::os::unix::fs::symlink("/etc/passwd", source.join("link")).unwrap();
+    assert!(workspace::call(&store, "seal_workspace", &workspace_args, |_| panic!()).is_err());
+    std::fs::remove_file(source.join("link")).unwrap();
+    run["job_id"] = json!("second");
+    run["args"] = json!(["-c", "printf changed > ../source/main.txt"]);
+    workspace::call(&store, "run_workspace_process", &run, |_| Ok(())).unwrap();
+    worker::run(&store.directory("second").unwrap()).unwrap();
+    assert_eq!(store.status("second").unwrap()["source_unchanged"], false);
+    assert!(workspace::call(&store, "get_artifact_manifest", &args, |_| panic!()).is_err());
+    workspace::call(&store, "remove_workspace", &workspace_args, |_| panic!()).unwrap();
+    assert_eq!(store.status("build").unwrap()["state"], "exited");
+}

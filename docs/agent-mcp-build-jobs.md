@@ -42,6 +42,19 @@
 
 Windows 进程树在暂停状态加入 Job Object 后才恢复执行；用户令牌执行及 Job Object 行为参考 Microsoft 的 [CreateProcessAsUserW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw) 与 [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)。
 
+## 工作区、源码与产物
+
+1. `create_workspace(workspace_id, source_revision)` 返回独立的 `source`、`build`、`artifacts`、`reports` 绝对路径。每个平台、每次独立构建使用不同 ID；相同 ID 不能改指向另一版本。最多保留 64 个工作区。
+2. 使用文件会话上传源码，或用普通 `run_process` 执行明确的 Git clone/checkout 命令。`source_revision` 是调用方声明，服务不把标签当作已验证的 Git 提交；需要时另外执行 `git rev-parse HEAD` 核对。
+3. `seal_workspace(workspace_id)` 对源码目录生成 SHA-256 指纹。忽略 `.git`、`__pycache__`、`.pytest_cache` 目录，拒绝符号链接和特殊文件；最多 4096 项、512 MiB、32 层目录，单次计算最多 10 秒。超过限制应拆分输入，或使用普通命令任务执行项目自己的校验步骤。
+4. `run_workspace_process` 接受普通命令参数和 `workspace_id`，但 `cwd` 改为工作区相对路径，默认 `build`。启动前重新核对源码指纹，同一工作区只能有一个此类任务；忙时拒绝，其他工作区仍可独立构建。命令完成后记录 `source_unchanged`，再释放工作区。
+5. 最后一个任务完成后，调用 `get_artifact_manifest(workspace_id, job_id, paths)`，例如 `paths:["artifacts/app.zip","reports/tests.xml"]`，返回每个文件的远端路径、长度、SHA-256 和任务记录的源码信息。选择最多 64 个文件、合计 2 GiB，计算最多 10 秒。使用文件传输下载后重新计算 SHA-256；清单本身不执行下载。
+6. 下载完成后显式 `remove_workspace` 删除源码、构建目录和产物；任务磁盘日志仍单独保留。
+
+清单只允许关联工作区最后一个任务，防止后续构建覆盖文件后仍冒用旧任务 ID。它证明采集时的文件内容，不证明每个文件都由该命令生成；`command_success`、`source_unchanged_after_job`、`revision_verified` 分开报告。源码在命令运行中被修改、产物在采集后被改写，都需要调用方处理。工作区锁只协调 `run_workspace_process`，不会阻止用户或其他文件/终端工具写入；不是文件系统沙箱。
+
+工作区保存在命令存储目录的 `.workspaces` 子目录。worker 异常退出留下的租约不会自动抢占，以免两个构建写入同一目录。用 `get_workspace` 查看租约的任务 ID，先查明未知任务状态再人工恢复。
+
 ## 验证与回归面
 
 本地 macOS ARM64 验证真实命令 stdout/stderr、Unicode 环境值、非零退出码、重复请求、过期心跳、超时、日志限额、取消及孙进程清理；原生 MCP 回归 24 项通过，独立协议 29 项通过。Windows 平台模块通过 `windows 0.61.1`、`x86_64-pc-windows-gnu` 的交叉类型检查，尚不等于 Windows 实机运行验收。
@@ -56,3 +69,5 @@ Windows 进程树在暂停状态加入 Job Object 后才恢复执行；用户令
 - `Cargo.toml`：启用既有 Windows 依赖的 JobObjects API，无新增生产依赖。
 
 `mcp` 关闭时不进入新路径。不修改 PTY、文件传输、现有 UIA 私有字段 50001、Flutter 或子模块。开始任务前工作区已有的文件会话关闭修复保持独立。
+
+工作区新增模块为 `libs/agent_mcp/src/workspace.rs` 与 `src/agent_mcp/process/workspace.rs`。既有 MCP 目录/路由注册工作区工具，命令存储列表跳过 `.workspaces`，worker 仅在任务携带工作区上下文时核对指纹和释放租约。普通命令任务仍走原执行路径。新增回归覆盖未封存/变更源码拒绝启动、重复请求、工作区互斥、链接/路径逃逸、真实产物校验、后续任务隔离和完成后租约释放。

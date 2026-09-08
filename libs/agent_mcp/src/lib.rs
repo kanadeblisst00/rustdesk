@@ -7,6 +7,7 @@ pub mod http;
 pub mod pixels;
 pub mod process;
 pub mod queue;
+pub mod workspace;
 
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
