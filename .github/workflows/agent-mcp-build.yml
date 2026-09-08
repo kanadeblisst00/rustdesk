@@ -172,8 +172,21 @@ jobs:
           brew install llvm
           if ! command -v pkg-config; then brew install pkg-config; fi
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
-          curl --fail --location --retry 3 https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip -o "$RUNNER_TEMP/nasm.zip"
-          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP/mcp-nasm"
+          if curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip -o "$RUNNER_TEMP/nasm.zip"; then
+            unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP/mcp-nasm"
+          else
+            echo "::warning::NASM binary download failed; building the same version from the MacPorts source mirror."
+            curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 https://distfiles.macports.org/nasm/nasm-2.16.03.tar.bz2 -o "$RUNNER_TEMP/nasm.tar.bz2"
+            echo "bef3de159bcd61adf98bb7cc87ee9046e944644ad76b7633f18ab063edb29e57  $RUNNER_TEMP/nasm.tar.bz2" | shasum -a 256 -c -
+            mkdir -p "$RUNNER_TEMP/mcp-nasm"
+            tar -xjf "$RUNNER_TEMP/nasm.tar.bz2" -C "$RUNNER_TEMP/mcp-nasm"
+            (
+              cd "$RUNNER_TEMP/mcp-nasm/nasm-2.16.03"
+              ./configure
+              make -j3 nasm
+            )
+          fi
+          "$RUNNER_TEMP/mcp-nasm/nasm-2.16.03/nasm" -v
           echo "$RUNNER_TEMP/mcp-nasm/nasm-2.16.03" >> "$GITHUB_PATH"
       - name: Install Windows LLVM
         if: runner.os == 'Windows'
