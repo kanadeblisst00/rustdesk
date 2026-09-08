@@ -1,11 +1,7 @@
 use super::*;
 use crate::{client::Data, flutter::FlutterSession};
-use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
 use rustdesk_agent_mcp::automation as model;
-use std::{
-    process::Command,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) mod windows;
 
@@ -26,7 +22,6 @@ pub(super) struct State {
     pending: Mutex<Option<Pending>>,
     snapshot: Mutex<Option<Snapshot>>,
     unavailable: Mutex<Option<(Instant, String, String)>>,
-    ocr: Mutex<Option<(Vec<u8>, Value)>>,
     generation: AtomicU64,
     windows: windows::State,
 }
@@ -40,7 +35,6 @@ impl State {
         self.pending.lock().unwrap().take();
         self.snapshot.lock().unwrap().take();
         self.unavailable.lock().unwrap().take();
-        self.ocr.lock().unwrap().take();
         self.windows.clear();
     }
 }
@@ -50,11 +44,6 @@ impl Drop for PendingGuard<'_> {
     fn drop(&mut self) {
         self.0.pending.lock().unwrap().take();
     }
-}
-
-pub(super) fn ocr_capability() -> Value {
-    json!({"engine":"PP-OCRv4","configured":std::env::var_os("RUSTDESK_MCP_OCR_PYTHON").is_some(),
-        "runtime":"Python with tools/mcp/ocr-requirements.txt","location":"controller"})
 }
 
 pub(crate) fn response(peer_id: &str, msg: &hbb_common::message_proto::Message) -> bool {
@@ -291,84 +280,6 @@ pub(super) fn fresh_shot(
     )
 }
 
-fn ocr(shot: &Value, state: &State) -> Value {
-    let started = Instant::now();
-    let result = (|| {
-        let python = std::env::var_os("RUSTDESK_MCP_OCR_PYTHON").ok_or("PP-OCRv4 is not configured. Install tools/mcp/ocr-requirements.txt and set RUSTDESK_MCP_OCR_PYTHON before starting RustDesk. OCR recognizes rendered text, not unlabeled icons; use list_windows, taskbar UIA or screenshot vision for icons")?;
-        let data = shot["content"]
-            .as_array()
-            .and_then(|items| items.iter().find(|v| v["type"] == "image"))
-            .and_then(|v| v["data"].as_str())
-            .ok_or("Screenshot has no image")?;
-        let png = STANDARD.decode(data).map_err(|e| e.to_string())?;
-        let previous = state.ocr.lock().unwrap();
-        if let Some((previous, result)) = previous.as_ref() {
-            if *previous == png {
-                return Ok(result.clone());
-            }
-        }
-        drop(previous);
-        let mut command = Command::new(python);
-        command.args(["-I", "-c", include_str!("../../tools/mcp/ocr.py")]);
-        let output = rustdesk_agent_mcp::helper::run(&mut command, &png, Duration::from_secs(15))?;
-        let result: Value =
-            serde_json::from_slice(&output).map_err(|_| "Invalid PP-OCRv4 response")?;
-        if result["available"] == true {
-            *state.ocr.lock().unwrap() = Some((png, result.clone()));
-        }
-        Ok::<_, String>(result)
-    })();
-    let mut result =
-        result.unwrap_or_else(|error| json!({"available":false,"engine":"PP-OCRv4","error":error}));
-    result["frame_id"] = shot["structuredContent"]["frame_id"].clone();
-    result["display"] = shot["structuredContent"]["display"].clone();
-    result["processing_ms"] = json!(started.elapsed().as_millis());
-    result
-}
-
-fn target_unchanged(first: &Value, second: &Value, bounds: &Value) -> Result<bool, String> {
-    use image::GenericImageView;
-    let decode = |shot: &Value| {
-        let data = shot["content"]
-            .as_array()
-            .and_then(|items| items.iter().find(|v| v["type"] == "image"))
-            .and_then(|v| v["data"].as_str())
-            .ok_or("Screenshot has no image")?;
-        image::load_from_memory(&STANDARD.decode(data).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())
-    };
-    let (first, second) = (decode(first)?, decode(second)?);
-    if first.dimensions() != second.dimensions() {
-        return Ok(false);
-    }
-    let coordinate = |key| {
-        bounds
-            .get(key)
-            .and_then(Value::as_u64)
-            .and_then(|n| u32::try_from(n).ok())
-            .ok_or("Invalid OCR bounds")
-    };
-    let (x, y, w, h) = (
-        coordinate("x")?,
-        coordinate("y")?,
-        coordinate("width")?,
-        coordinate("height")?,
-    );
-    if w == 0
-        || h == 0
-        || x.checked_add(w).map_or(true, |r| r > first.width())
-        || y.checked_add(h).map_or(true, |b| b > first.height())
-    {
-        return Err("OCR bounds outside frame".into());
-    }
-    // Check the target, not unrelated clocks or animations elsewhere on the screen.
-    Ok(first
-        .view(x, y, w, h)
-        .pixels()
-        .zip(second.view(x, y, w, h).pixels())
-        .all(|(a, b)| a.2 == b.2))
-}
-
 fn with_image(data: Value, shot: &Value) -> Value {
     let mut result = success(data);
     if let (Some(out), Some(items)) = (result["content"].as_array_mut(), shot["content"].as_array())
@@ -515,9 +426,7 @@ pub(super) fn call(
             action,
         ));
     }
-    let uia = if matches!(name, "get_screen_text" | "find_text")
-        || (name == "get_ui_state" && args.get("include_uia") == Some(&Value::Bool(false)))
-    {
+    let uia = if name == "get_ui_state" && args.get("include_uia") == Some(&Value::Bool(false)) {
         json!({"available":false,"skipped":true})
     } else {
         tree(id, s, state, display, scope)
@@ -526,46 +435,22 @@ pub(super) fn call(
     if name == "get_ui_tree" {
         return Ok(success(uia));
     }
-    let mut matches = uia["elements"]
+    let matches = uia["elements"]
         .as_array()
         .map(|elements| model::find(elements, args))
         .unwrap_or_default();
     let shot = fresh_shot(id, s, state, display, timeout)?;
-    let text = if name == "get_ui_state" && args.get("include_ocr") == Some(&Value::Bool(false)) {
-        json!({"available":false,"skipped":true})
-    } else if name == "get_ui_state"
-        || matches!(name, "get_screen_text" | "find_text")
-        || matches.is_empty()
-    {
-        ocr(&shot, &state.automation)
-    } else {
-        json!({"available":false,"skipped":true})
-    };
     check(id, s, &state.automation, generation)?;
     if name == "get_ui_state" {
         return Ok(with_image(
-            json!({"screen":shot["structuredContent"],"uia":uia,"ocr":text}),
+            json!({"screen":shot["structuredContent"],"uia":uia}),
             &shot,
         ));
-    }
-    if name == "get_screen_text" {
-        return Ok(with_image(
-            json!({"screen":shot["structuredContent"],"ocr":text}),
-            &shot,
-        ));
-    }
-    let mut source = "uia";
-    if matches.is_empty() {
-        source = "ocr";
-        matches = text["blocks"]
-            .as_array()
-            .map(|elements| model::find(elements, args))
-            .unwrap_or_default();
     }
     if name != "click_text" {
         return Ok(with_image(
-            json!({"found":!matches.is_empty(),"source":source,"matches":matches,
-            "screen":shot["structuredContent"],"uia":uia,"ocr":text,
+            json!({"found":!matches.is_empty(),"source":"uia","matches":matches,
+            "screen":shot["structuredContent"],"uia":uia,
             "next_step":if matches.is_empty(){"Use the screenshot with a vision model"}else{"Choose an unambiguous target"}}),
             &shot,
         ));
@@ -576,7 +461,7 @@ pub(super) fn call(
         Err(error) => {
             let mut result = with_image(
                 json!({"found":!matches.is_empty(),"matches":matches,"error":error,
-                "screen":shot["structuredContent"],"uia":uia,"ocr":text}),
+                "screen":shot["structuredContent"],"uia":uia}),
                 &shot,
             );
             result["isError"] = json!(true);
@@ -590,10 +475,9 @@ pub(super) fn call(
         .unwrap()
         .as_ref()
         .map(|s| s.raw.clone());
-    let action = if source == "uia"
-        && selected["patterns"]
-            .as_array()
-            .is_some_and(|patterns| patterns.iter().any(|p| p == "Invoke" || p == "Toggle"))
+    let action = if selected["patterns"]
+        .as_array()
+        .is_some_and(|patterns| patterns.iter().any(|p| p == "Invoke" || p == "Toggle"))
     {
         let (element, _) = raw_target(
             &state.automation,
@@ -613,49 +497,39 @@ pub(super) fn call(
             None,
         )
     } else {
-        // Re-observe before coordinate input. OCR may be slow, and UIA rectangles may move.
-        let newer = fresh_shot(id, s, state, display, timeout.min(3000))?;
-        let current = if source == "uia" {
-            let raw_id = raw_target(
-                &state.automation,
-                selected["element_id"]
-                    .as_str()
-                    .ok_or("Missing element ID")?,
-                display,
-            )?
-            .0["element_id"]
-                .clone();
-            let current = tree(id, s, state, display, scope);
-            let found = current["elements"]
-                .as_array()
-                .map(|elements| model::find(elements, args))
-                .unwrap_or_default();
-            let selected = model::choose(&found, args.get("match_index").and_then(Value::as_u64))?;
-            let element = raw_target(
-                &state.automation,
-                selected["element_id"]
-                    .as_str()
-                    .ok_or("Missing element ID")?,
-                display,
-            )?
-            .0;
-            if element["element_id"] != raw_id
-                || element["enabled"] != true
-                || element["offscreen"] == true
-                || element["password"] == true
-            {
-                return Err("UIA target changed; find it again".into());
-            }
-            selected.clone()
-        } else {
-            // Do not click coordinates from an image that changed while OCR was running.
-            if !target_unchanged(&shot, &newer, &selected["bounds"])? {
-                return Err(
-                    "Remote screen changed during OCR; find_text again before clicking".into(),
-                );
-            }
-            selected.clone()
-        };
+        // Re-observe before coordinate input because UIA rectangles may move.
+        fresh_shot(id, s, state, display, timeout.min(3000))?;
+        let raw_id = raw_target(
+            &state.automation,
+            selected["element_id"]
+                .as_str()
+                .ok_or("Missing element ID")?,
+            display,
+        )?
+        .0["element_id"]
+            .clone();
+        let current = tree(id, s, state, display, scope);
+        let found = current["elements"]
+            .as_array()
+            .map(|elements| model::find(elements, args))
+            .unwrap_or_default();
+        let selected = model::choose(&found, args.get("match_index").and_then(Value::as_u64))?;
+        let element = raw_target(
+            &state.automation,
+            selected["element_id"]
+                .as_str()
+                .ok_or("Missing element ID")?,
+            display,
+        )?
+        .0;
+        if element["element_id"] != raw_id
+            || element["enabled"] != true
+            || element["offscreen"] == true
+            || element["password"] == true
+        {
+            return Err("UIA target changed; find it again".into());
+        }
+        let current = selected.clone();
         let b = &current["bounds"];
         let x = b["x"].as_f64().ok_or("Invalid target bounds")?
             + b["width"].as_f64().ok_or("Invalid target bounds")? / 2.0;
@@ -718,48 +592,5 @@ mod tests {
         }
         element["enabled"] = json!(false);
         assert!(pattern(&element, "auto").is_err());
-    }
-
-    #[test]
-    fn embedded_ocr_helper_runs_on_a_lossless_remote_frame() {
-        let Some(python) = std::env::var_os("RUSTDESK_TEST_OCR_PYTHON") else {
-            return;
-        };
-        use image::{ImageBuffer, ImageOutputFormat, Rgba};
-        use std::io::Cursor;
-        let image = ImageBuffer::from_pixel(200, 80, Rgba([255u8, 255, 255, 255]));
-        let mut bytes = Cursor::new(Vec::new());
-        image.write_to(&mut bytes, ImageOutputFormat::Png).unwrap();
-        let mut command = Command::new(python);
-        command.args(["-I", "-c", include_str!("../../tools/mcp/ocr.py")]);
-        let output =
-            rustdesk_agent_mcp::helper::run(&mut command, bytes.get_ref(), Duration::from_secs(15))
-                .unwrap();
-        let result: Value = serde_json::from_slice(&output).unwrap();
-        assert_eq!(result["available"], true, "{result}");
-        assert_eq!(result["engine"], "PP-OCRv4");
-        assert!(result["blocks"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn ocr_click_rejects_changed_target_but_ignores_unrelated_pixels() {
-        use image::{ImageBuffer, ImageOutputFormat, Rgba};
-        use std::io::Cursor;
-        let shot = |changed: Option<(u32, u32)>| {
-            let mut image = ImageBuffer::from_pixel(100, 100, Rgba([255u8, 255, 255, 255]));
-            if let Some((x, y)) = changed {
-                image.put_pixel(x, y, Rgba([0, 0, 0, 255]));
-            }
-            let mut bytes = Cursor::new(Vec::new());
-            image.write_to(&mut bytes, ImageOutputFormat::Png).unwrap();
-            json!({"content":[{"type":"image","data":STANDARD.encode(bytes.into_inner())}]})
-        };
-        let bounds = json!({"x":20,"y":20,"width":30,"height":30});
-        let first = shot(None);
-        assert!(target_unchanged(&first, &shot(Some((90, 90))), &bounds).unwrap());
-        assert!(!target_unchanged(&first, &shot(Some((30, 30))), &bounds).unwrap());
-        assert!(
-            target_unchanged(&first, &first, &json!({"x":99,"y":0,"width":10,"height":2})).is_err()
-        );
     }
 }

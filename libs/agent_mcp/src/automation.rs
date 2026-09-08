@@ -14,8 +14,6 @@ pub fn is_tool(name: &str) -> bool {
             | "find_element"
             | "invoke_ui_element"
             | "set_ui_value"
-            | "get_screen_text"
-            | "find_text"
             | "click_text"
             | "list_windows"
             | "get_foreground_window"
@@ -45,10 +43,7 @@ pub fn find(elements: &[Value], args: &Map<String, Value>) -> Vec<Value> {
                 .and_then(Value::as_str)
                 .map_or(true, |text| {
                     matches_text(
-                        e.get("name")
-                            .or_else(|| e.get("text"))
-                            .and_then(Value::as_str)
-                            .unwrap_or(""),
+                        e.get("name").and_then(Value::as_str).unwrap_or(""),
                         text,
                         args.get("exact").and_then(Value::as_bool).unwrap_or(false),
                         args.get("ignore_case")
@@ -70,7 +65,10 @@ pub fn choose(matches: &[Value], index: Option<u64>) -> Result<&Value, String> {
         return Err("Target not found; inspect the returned screenshot with a vision model".into());
     }
     if index.is_none() && matches.len() != 1 {
-        return Err(format!("Ambiguous target: {} matches; specify match_index after inspecting find_ui_element/find_text", matches.len()));
+        return Err(format!(
+            "Ambiguous target: {} matches; specify match_index after inspecting find_ui_element",
+            matches.len()
+        ));
     }
     matches
         .get(index.unwrap_or(0) as usize)

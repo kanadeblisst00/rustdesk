@@ -134,10 +134,9 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
             "invoke_ui_element",
             json!({"session":"s","element_id":"id","action":"shell"}),
         ),
-        (
-            "find_text",
-            json!({"session":"s","text":"yes","automation_id":"invalid"}),
-        ),
+        ("get_screen_text", json!({"session":"s"})),
+        ("find_text", json!({"session":"s","text":"yes"})),
+        ("get_ui_state", json!({"session":"s","include_ocr":true})),
         ("get_ui_tree", json!({"session":"s","timeout_ms":10001})),
         ("get_ui_state", json!({"session":"s","display":64})),
         (
@@ -157,7 +156,7 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
     }
     assert_eq!(backend.calls.load(Ordering::Relaxed), 0);
     let tools = catalog::tools();
-    assert_eq!(tools.len(), 46);
+    assert_eq!(tools.len(), 44);
     for tool in tools
         .iter()
         .filter(|t| rustdesk_agent_mcp::automation::is_tool(t["name"].as_str().unwrap()))

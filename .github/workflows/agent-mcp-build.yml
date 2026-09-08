@@ -65,7 +65,7 @@ jobs:
       - name: Package MCP toolkit
         run: |
           mkdir rustdesk-mcp-toolkit
-          cp tools/mcp/stdio.py tools/mcp/ocr-requirements.txt rustdesk-mcp-toolkit/
+          cp tools/mcp/stdio.py rustdesk-mcp-toolkit/
           cp tools/mcp/server-config.json rustdesk-mcp-toolkit/SERVER-CONFIG.json
           cp docs/agent-mcp.md rustdesk-mcp-toolkit/README.md
           git rev-parse HEAD > rustdesk-mcp-toolkit/COMMIT.txt

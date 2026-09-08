@@ -2,7 +2,7 @@
 
 给定的 12 分钟任务复盘没有附逐次工具调用日志、耗时与原始截图，因此无法把每一段
 耗时认定为已证实的 RTT，也不能承诺修复后固定在 30–60 秒完成。模型思考、MCP 客户端
-工具发现、网络、截图传输、PowerShell/UIA、OCR 和应用响应都可能贡献耗时。
+工具发现、网络、截图传输、PowerShell/UIA 和应用响应都可能贡献耗时。
 
 当前代码可确认的缺口是窗口定位缺少独立入口、前台树与任务栏范围没有分开、批次不能
 携带剪贴板/等待/屏幕证据，以及单独 Win 键别名缺失。下面的改动使 agent 可以减少无效
@@ -12,8 +12,8 @@
 
 | 说法 | 当前证据与处理 |
 | --- | --- |
-| OCR 能一次命中任务栏微信 | 不成立。纯图标没有“微信”文字；OCR 只能处理可见文本，不能替代图标识别。使用窗口枚举、任务栏 UIA 标签或截图视觉。 |
-| 没配 OCR 就不能用 click_text | 不准确。原实现已优先匹配 UIA，找不到才尝试 OCR。find_text 是 OCR 专用入口。 |
+| OCR 能一次命中任务栏微信 | 不成立。纯图标没有“微信”文字。当前已移除服务内 OCR，使用窗口枚举、任务栏 UIA 标签或截图视觉。 |
+| click_text 必须依赖文字识别 | 不准确。当前工具只匹配 UIA 控件名称，无匹配时返回错误和截图。 |
 | 微信、Qt、Electron 的 UIA 都为空 | 不能泛化。取决于版本、控件和 provider；先检查当前应用返回的节点。 |
 | keyboard_input 失败证明需要更底层 SendInput | 证据不足。Windows 原有输入链已使用 SendInput；焦点、控件兼容、权限和 IME 都可能影响结果。保留原有注入链。 |
 | 把五个未确认的界面步骤一次批量发送最优 | 不采纳。窗口切换/导航后布局可能变化。只批量执行已观察、稳定界面中的短序列，发送消息前确认接收对象和输入内容。 |
@@ -36,8 +36,8 @@
    发生重连、窗口布局变化或 ID 过期时才重新定位。
 2. Windows 先 `list_windows` 按标题或进程筛选，选唯一 window_id；
    `focus_window(screenshot_after:true)` 返回聚焦结果和截图。应用不在枚举结果中时，
-   用 `get_ui_tree(scope:"taskbar")` 或截图视觉定位，不把纯图标送入 OCR 找文字。
-3. 依据实际控件情况选择 UIA、文字识别或截图坐标。不要在前台是浏览器时反复扫描
+   用 `get_ui_tree(scope:"taskbar")` 或截图视觉定位。
+3. 依据实际控件情况选择 UIA 或截图坐标。不要在前台是浏览器时反复扫描
    浏览器树来查另一个应用。只需核对前台时用 `get_foreground_window`。
 4. 确认聊天对象和输入框后，执行短批次。clipboard_set 替换远端文本剪贴板，
    Ctrl+v 才粘贴；等待是缓冲时间，不是远端剪贴板已应用的确认。
@@ -78,10 +78,10 @@
 - screenshot 默认原尺寸；显式 max_width 可减少传输量。图像坐标映射为
   `display_x=offset_x+image_x*scale_x`，纵坐标同理。窗口枚举的边界是全桌面物理坐标，
   鼠标输入/UIA 则使用显示器相对原始坐标，二者不能混用。
-- OCR 仍使用既有可选 PP-OCRv4 运行时。未配置立即报告，不解码整张 PNG 后再发现缺配置。
-  include_ocr/include_uia 默认保持原行为，agent 可以明确关闭不需要的来源。
+- `get_ui_state` 默认组合 UIA 与截图，可设 `include_uia:false` 跳过控件树。
+  服务内文字识别已移除，接口变更见 [使用说明](agent-mcp.md#windows-uia)。
 - 窗口查询仍启动受限的 PowerShell 辅助进程，但在加载 UIA 程序集和遍历树之前返回。
-  没有常驻辅助进程、自动安装 OCR、输入注入重写或“发微信”专用接口。
+  没有常驻辅助进程、输入注入重写或“发微信”专用接口。
 
 ## 验证
 
@@ -94,7 +94,7 @@ $env:RUSTDESK_TEST_UIA = "1"
 python -m unittest discover -s tools/mcp -p test_uia_windows.py -v
 ```
 
-本次 macOS 验证结果（2026-09-08）：
+此前窗口优化提交 `cd9f05213` 的 macOS 验证结果（2026-09-08，移除前的工具数和测试数）：
 
 | 检查 | 结果 |
 | --- | --- |
@@ -119,7 +119,7 @@ Windows 实机还需验收：最小化窗口恢复及激活被系统拒绝的情
 | libs/agent_mcp/src/catalog.rs、lib.rs | 增加窗口工具、批次参数、可选观察来源和运行时 agent 指引，导出专用校验/队列模块。 |
 | libs/agent_mcp/src/automation.rs | 私有窗口操作、taskbar 操作及身份校验；旧 UIA 操作保持原能力。 |
 | src/agent_mcp/mod.rs | MCP 能力、同桌面会话有界排队、批次薄路由；不能在 UI 层完成这些协议行为，文件/终端并发路径保持原样。 |
-| src/agent_mcp/automation.rs | 新窗口路由、taskbar 范围传播、可选观察源、按范围隔离不可用缓存，OCR 缺配置提前返回。 |
+| src/agent_mcp/automation.rs | 新窗口路由、taskbar 范围传播、可选观察源、按范围隔离不可用缓存，无匹配时返回截图。 |
 | src/agent_mcp/desktop.rs | MCP 单键别名与截图原尺寸/坐标映射；原有远端注入链未修改。 |
 | src/platform/agent_uia.ps1 | Windows 轻量窗口操作与独立任务栏遍历，沿用安全桌面检查和现有 Pattern 执行。 |
 | 协议/Windows 测试、SDK 互操作、使用文档 | 验证和说明新增契约，无额外生产行为。 |
@@ -127,3 +127,5 @@ Windows 实机还需验收：最小化窗口恢复及激活被系统拒绝的情
 新实现集中在 MCP 专用 actions、queue、automation/windows 模块。没有修改 server
 输入处理、Flutter、子模块或 protobuf 定义；feature-off 保持原路径。本轮开始已有的
 会话关闭改动不属于此次优化提交。
+
+服务内文字识别移除后的验证与回归范围见 [专项验证记录](agent-mcp-ui-automation-validation.md)。

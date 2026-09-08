@@ -9,7 +9,7 @@
 3. 启动构建后的 RustDesk，在「设置 → 安全」启用「Enable MCP server / 启用 MCP 服务」。普通发行版未包含 `mcp` feature 时不显示此设置。
 4. 建议先配置设备白名单和只读模式，再点击「复制 MCP 配置」。启动成功的状态应为 `Listening on http://127.0.0.1:59940/mcp`。
 
-编译开关默认关闭，运行时默认关闭。仅支持 Windows、macOS、Linux 的 Flutter 控制端；不支持移动端或旧 Sciter 界面。截图、输入和控制端 OCR 不要求远端 MCP 改造；Windows UIA 需要被控端也使用包含 `mcp` feature 的新版构建。
+编译开关默认关闭，运行时默认关闭。仅支持 Windows、macOS、Linux 的 Flutter 控制端；不支持移动端或旧 Sciter 界面。截图和输入不要求远端 MCP 改造；Windows UIA 需要被控端也使用包含 `mcp` feature 的新版构建。
 
 ### GitHub Actions 多平台构建
 
@@ -24,13 +24,13 @@
 | `rustdesk-mcp-linux-arm64` | Ubuntu 22.04 ARM64 环境构建的 Debian 包和应用目录 TAR.GZ |
 | `rustdesk-mcp-macos-x64` | Intel Mac 的 `.app.zip` |
 | `rustdesk-mcp-macos-arm64` | Apple Silicon 的 `.app.zip`，最低 macOS 12.3 |
-| `rustdesk-mcp-toolkit.zip` | MCP stdio 代理、OCR 依赖、服务器配置、使用说明及 `COMMIT.txt` |
+| `rustdesk-mcp-toolkit.zip` | MCP stdio 代理、服务器配置、使用说明及 `COMMIT.txt` |
 
 等待目标平台任务成功后，在该次运行的 **Summary → Artifacts** 下载对应应用和独立的 MCP 工具包。Windows 使用 RustDesk 自带的 portable packer，将 Flutter 应用目录嵌入一个可直接运行或安装的自解压 EXE；MCP 工具包只生成一次，避免在每个平台产物中重复。`mcp-bridge` 只是构建中间文件。最终产物保留 14 天，可通过再次运行重新构建。
 
 这些是未进行发行签名/公证的测试包，不是正式签名安装器。Windows 包不附带上游发布流程额外下载的虚拟显示器和打印机驱动，也未启用 `vram`。Linux x64 与 ARM64 运行仍需要系统图形/音频等依赖，不保证兼容比 Ubuntu 22.04 更老的发行版；ARM64 使用项目上游采用的 `flutter-elinux` 构建路径。macOS 首次打开可能需要按系统提示允许该应用；不要全局关闭系统安全保护。安装后仍需手动启用 MCP 服务并配置授权。
 
-`Agent MCP protocol` 是自动协议与 OCR 检查，不生成桌面安装包；桌面产物只由手动触发的 `MCP desktop build` 生成。本 fork 已移除上游通用 CI、全量 Flutter、nightly、tag 和 playground 编译流程，避免一次推送触发多套不含 MCP 的重复构建。
+`Agent MCP protocol` 是自动协议检查，不生成桌面安装包；桌面产物只由手动触发的 `MCP desktop build` 生成。本 fork 已移除上游通用 CI、全量 Flutter、nightly、tag 和 playground 编译流程，避免一次推送触发多套不含 MCP 的重复构建。
 
 ### 内置私有服务器
 
@@ -134,14 +134,14 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 ## 工具与工作流
 
-`tools/list` 返回 46 个工具的完整 JSON Schema，拒绝未知字段、越界坐标与不合法类型。同一连接中复用已获取的 schema，避免每一步重新探查。所有会话操作必须使用返回的 `session` UUID，不能把设备 ID 当会话 UUID，也不会根据当前焦点猜测目标。
+`tools/list` 返回 44 个工具的完整 JSON Schema，拒绝未知字段、越界坐标与不合法类型。同一连接中复用已获取的 schema，避免每一步重新探查。所有会话操作必须使用返回的 `session` UUID，不能把设备 ID 当会话 UUID，也不会根据当前焦点猜测目标。
 
 | 类别 | 工具 |
 | --- | --- |
 | 能力与会话 | `get_capabilities`, `list_connections`, `connect_device`, `get_connection_info`, `disconnect_device`, `input_password`, `submit_2fa` |
 | 观察 | `list_displays`, `select_display`, `screenshot` |
 | Windows 窗口 | `list_windows`, `get_foreground_window`, `focus_window` |
-| UIA / OCR | `get_ui_tree`, `get_ui_state`, `find_ui_element`, `find_element`, `invoke_ui_element`, `set_ui_value`, `get_screen_text`, `find_text`, `click_text` |
+| UIA | `get_ui_tree`, `get_ui_state`, `find_ui_element`, `find_element`, `invoke_ui_element`, `set_ui_value`, `click_text` |
 | 输入 | `mouse_move`, `mouse_click`, `mouse_drag`, `mouse_scroll`, `keyboard_input`, `keyboard_hotkey`, `execute_actions` |
 | 剪贴板 | `clipboard_get`, `clipboard_set` |
 | 终端 | `terminal_open`, `terminal_input`, `terminal_output`, `terminal_resize`, `terminal_close` |
@@ -162,7 +162,7 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 可见连接由 MCP 监听进程直接向本进程主窗口发送连接事件，避免启动第二个应用实例及其 MCP/IPC 端口争用。主窗口事件通道不可用时立即返回错误，可重新打开主窗口或显式使用 `headless:true`。
 
-桌面操作先确认目标应用，再观察控件并操作。Windows 可先用 `list_windows` 按 `title` / `process_name` 筛选运行中的窗口，选择唯一的 `window_id` 后调用 `focus_window`；只有返回 `focused:true` 才表示观察到了目标前台窗口，并不证明输入框已经获得焦点。`get_foreground_window` 不遍历控件树、不运行 OCR。窗口 ID 绑定会话，30 秒过期，重连后失效；窗口操作需要被控端更新。Windows 可能拒绝激活，此时用任务栏 UIA 或截图重新定位。
+桌面操作先确认目标应用，再观察控件并操作。Windows 可先用 `list_windows` 按 `title` / `process_name` 筛选运行中的窗口，选择唯一的 `window_id` 后调用 `focus_window`；只有返回 `focused:true` 才表示观察到了目标前台窗口，并不证明输入框已经获得焦点。`get_foreground_window` 不遍历控件树。窗口 ID 绑定会话，30 秒过期，重连后失效；窗口操作需要被控端更新。Windows 可能拒绝激活，此时用任务栏 UIA 或截图重新定位。
 
 截图默认保留原始分辨率，可显式用 `max_width` 降采样。输入坐标是所选显示器的原始像素坐标；服务端会加上多显示器桌面原点（允许负原点）。截图同时返回 `coordinate_space` 与 `image_to_display` 映射，有裁剪或缩放时：
 
@@ -183,39 +183,29 @@ Windows 可将 `command` 改成 Python 可执行文件的绝对路径。stdout �
 
 Windows 组合热键显式按下修饰键和主键，先释放主键，再反向释放修饰键；中途失败也会尝试释放已经排队按下的键。字母/数字主键使用 Windows 虚拟按键编码，避免输入法或字符映射把 `Meta+r` 变成单独的 Windows 键。单键与其他平台保留原来的输入路径。
 
-### Windows UIA 与 PP-OCRv4
+### Windows UIA
 
 `get_ui_tree` 默认返回被控 Windows 的**前台窗口**控件树，也可用 `scope:"taskbar"` 只扫描主/副显示器任务栏及其中暴露的托盘控件。包括名称、AutomationId、控件类型、父子关系、边界、可用 Pattern、焦点、非密码值和 Toggle 状态。最多 512 个节点、12 层；`truncated` 和 `unavailable_nodes` 标明不完整结果。树只保留与所选显示器相交的可见控件，`bounds` 已转换为显示器相对原始像素；`desktop_bounds` 保留 Windows 物理桌面坐标。负原点和 DPI 缩放不需要 agent 再计算。窗口枚举工具的 `bounds` 则是全桌面物理坐标，需结合显示器原点使用。
 
-`get_ui_state` 默认组合 UIA、OCR 与截图；已知不需要的来源可设 `include_uia:false` / `include_ocr:false` 跳过。UIA 支持取决于应用及控件实现，不能仅按 Qt/Electron 等框架一概判定。OCR 识别已绘制的文字，不能把任务栏纯微信图标直接识别成“微信”；图标应使用暴露的 UIA 标签或视觉模型，不能保证一次命中。
+`get_ui_state` 默认组合 UIA 与截图；可设 `include_uia:false` 跳过控件树。UIA 支持取决于应用及控件实现，不能仅按 Qt/Electron 等框架一概判定。图标应使用暴露的 UIA 标签或调用方视觉模型；没有可访问标签时，服务不会从图像中自动提取文字。
+
+OCR 功能已移除：`get_screen_text`、`find_text` 和 `include_ocr` 参数不再接受，`get_capabilities` 不再返回 `ocr` / `ocr_details`，观察结果也不再包含 `ocr`。旧客户端需重新获取工具目录；改用 `find_ui_element` 查 UIA 标签，或读取截图。原有 OCR 环境变量不再读取，无需安装 Python 识别依赖或模型。
 
 被控端使用系统 Windows PowerShell 的 MTA 子进程调用 .NET UI Automation，不安装 Python，也不需要开启被控端的 HTTP MCP 监听。请求只在现有 RustDesk 加密连接认证和会话类型校验后处理，读取与写入均要求远端键鼠权限；锁屏、安全桌面和 Session 0 返回不可用。新工具不会绕过 UAC 或提升权限。Windows 10/11 的交互桌面是目标环境，当前 macOS 本地验证不能替代 Windows 实机验收。
 
-PP-OCRv4 由**控制端** Python 辅助进程运行，读取最新远端帧的原尺寸无损 PNG，不读取本机桌面、不上传云服务。安装一次依赖，模型随固定版本的 RapidOCR wheel 提供，推理不自动下载模型。推荐 Python 3.11：
+常用调用：
 
-```sh
-python3.11 -m venv /absolute/path/rustdesk-ocr
-/absolute/path/rustdesk-ocr/bin/python -m pip install -r tools/mcp/ocr-requirements.txt
-export RUSTDESK_MCP_OCR_PYTHON=/absolute/path/rustdesk-ocr/bin/python
-# 从此终端启动新版 RustDesk 可执行文件，使应用进程继承环境变量。
-```
+1. `get_ui_state(session)` 返回 `uia`、`screen` 和 MCP 图片。UIA 不可用时仍可返回截图。
+2. `find_ui_element(session, text, exact?, ignore_case?, automation_id?, control_type?)` 匹配 UIA 控件名称，并同时满足提供的选择条件。`find_element` 是相同实现的别名。默认子串匹配、忽略大小写；`exact:true` 做完整文本匹配。无匹配时返回截图供 agent 的视觉模型判断，不在服务内调用视觉模型。
+3. `invoke_ui_element(session, element_id, action?)` 优先 InvokePattern，再 TogglePattern；可显式指定 `action:"invoke"` 或 `"toggle"`。`set_ui_value(session, element_id, value)` 使用 ValuePattern，拒绝只读或密码控件。`element_id` 是会话内最新 UIA 快照生成的临时 ID，30 秒后失效；重新取树、切换显示器或重连后应重新查找。被控端再次核对运行时 ID、名称、AutomationId 和控件类型，避免使用已消失/替换的控件。
+4. `click_text` 只查 UIA 控件名称。多个匹配时返回错误和匹配列表，需核对后显式传入从 0 开始的 `match_index`。目标优先使用 Invoke/Toggle；没有这些 Pattern 时重新读取控件边界、核验身份后点击中心。无匹配时返回错误和截图，不猜测点击坐标。
+5. 三个新操作工具均返回 `action` / `action_error`、操作后 UIA、更新截图和 `verification.uia_changed/new_frame`。`task_success:null` 明确表示仍需 agent 判断任务是否成功；新帧不一定代表界面变化，UIA 变化也不等同于业务成功。动作超时可能已经生效，**不自动补点或重试**。
 
-Windows 使用该 venv 的 `Scripts/python.exe`，在启动 RustDesk 的 PowerShell 中设置 `$env:RUSTDESK_MCP_OCR_PYTHON='C:\absolute\path\rustdesk-ocr\Scripts\python.exe'`。下载 MCP 工具包中的 `ocr-requirements.txt` 可直接安装依赖；辅助脚本已经嵌入 Rust 二进制，无需另配脚本路径。模型/运行时不捆绑进应用包。`get_capabilities.ocr_details.configured` 表示设置了 Python 路径，实际模型加载结果由 `ocr.available/error` 给出。
+各工具的 `timeout_ms` 控制初次截图等待（默认 3000，最多 10000 毫秒）；动作前复查和动作后截图最多等 3000 毫秒。UIA 请求等待最多 10 秒，被控辅助进程最多 8 秒。UIA 不可用结果缓存 30 秒，重连立即清除。脚本输入经 stdin 作为 JSON 传入，不能把远端文字当 PowerShell 代码执行；脚本没有动态命令执行接口。
 
-工具工作流：
+线协议使用 `Message` 的私有 protobuf length-delimited 字段 **50001**，内含版本标识 `rustdesk-uia/1`、随机请求 ID、固定操作及 JSON 数据，最大 1 MiB。旧版忽略此未知字段后，控制端报告 UIA 不可用，需通过截图观察；没有修改 `hbb_common` 子模块或复用聊天、剪贴板、终端通道。该字段属于本 fork 的扩展，合并其他 fork 协议前需检查字段冲突。
 
-1. `get_ui_state(session)` 同时返回 `uia`、`ocr`、`screen` 和 MCP 图片。每个来源单独报告可用性；UIA 不可用不会阻止 OCR。
-2. `find_ui_element(session, text, exact?, ignore_case?, automation_id?, control_type?)` 先匹配 UIA；无匹配时回退 OCR。`find_element` 是相同实现的别名。默认子串匹配、忽略大小写；`exact:true` 做完整文本匹配。OCR 无法满足 AutomationId/控件类型条件，因此不会丢弃这些条件后误匹配。UIA、OCR 都没有结果时返回截图供 agent 的视觉模型判断，不在服务内调用视觉模型。
-3. `get_screen_text` 直接运行 OCR，`find_text` 直接查 OCR 文字。文字块包含 `text`、`confidence`、`bounds`；低于 0.5 的结果被滤除。相同帧内容复用 OCR 缓存，`frame_id` 始终属于本次截图，`processing_ms` 表示本次 OCR 耗时。
-4. `invoke_ui_element(session, element_id, action?)` 优先 InvokePattern，再 TogglePattern；可显式指定 `action:"invoke"` 或 `"toggle"`。`set_ui_value(session, element_id, value)` 使用 ValuePattern，拒绝只读或密码控件。`element_id` 是会话内最新 UIA 快照生成的临时 ID，30 秒后失效；重新取树、切换显示器或重连后应重新查找。被控端再次核对运行时 ID、名称、AutomationId 和控件类型，避免使用已消失/替换的控件。
-5. `click_text` 使用同样的查找规则。多个匹配时返回错误和匹配列表，需核对后显式传入从 0 开始的 `match_index`。UIA 目标优先使用 Invoke/Toggle；没有这些 Pattern 时重新读取控件边界并点击中心。OCR 目标点击前再取新帧，要求目标矩形内像素保持一致；变化时退出，不点击旧坐标。其他区域的时钟/动画变化不会阻止点击。
-6. 三个新操作工具均返回 `action` / `action_error`、操作后 UIA、更新截图和 `verification.uia_changed/new_frame`。`task_success:null` 明确表示仍需 agent 判断任务是否成功；新帧不一定代表界面变化，UIA 变化也不等同于业务成功。动作超时可能已经生效，**不自动补点或重试**。
-
-各工具的 `timeout_ms` 控制初次截图等待（默认 3000，最多 10000 毫秒）；动作前复查和动作后截图最多等 3000 毫秒。UIA 请求等待最多 10 秒，被控辅助进程最多 8 秒；OCR 辅助进程最多 15 秒。UIA 不可用结果缓存 30 秒，重连立即清除。脚本输入经 stdin 作为 JSON/PNG 传入，不能把远端文字当 PowerShell 代码执行；脚本没有动态命令执行接口。
-
-线协议使用 `Message` 的私有 protobuf length-delimited 字段 **50001**，内含版本标识 `rustdesk-uia/1`、随机请求 ID、固定操作及 JSON 数据，最大 1 MiB。旧版忽略此未知字段后，控制端超时转用 OCR；没有修改 `hbb_common` 子模块或复用聊天、剪贴板、终端通道。该字段属于本 fork 的扩展，合并其他 fork 协议前需检查字段冲突。
-
-实现参考了 [QuickDesk 的 OCR 工具设计](https://github.com/barry-ran/QuickDesk/blob/master/docs/mcp-integration.md)、[RapidOCR 1.4.4 模型配置](https://github.com/RapidAI/RapidOCR/blob/v1.4.4/python/rapidocr_onnxruntime/config.yaml) 和 Microsoft 的 [UIA 线程约束](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading)、[Runtime ID 生命周期](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.getruntimeid)。使用新写的适配代码，没有复制这些项目的实现。
+实现参考 Microsoft 的 [UIA 线程约束](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading) 和 [Runtime ID 生命周期](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.getruntimeid)。
 
 ### 终端
 
@@ -240,7 +230,7 @@ Windows 使用该 venv 的 `Scripts/python.exe`，在启动 RustDesk 的 PowerSh
 - 每次输入仍检查远端键鼠权限与只读状态。权限撤销时拖拽仍尝试释放已按下的鼠标键，以免卡住远端输入。
 - 最大 16 个缓存会话、每会话 256 个事件、每事件 64 KiB、每 PTY 1 MiB 输出、每帧 64 MiB RGBA、每会话 16 个 PTY 和 256 个文件 job；请求体 1 MiB，最多 8 个正在执行的 MCP 请求。超限返回错误或显式截断标记。
 - 使用无状态 Streamable HTTP 的 JSON 响应，POST `/mcp`；通知返回 202，GET 返回 405，不宣称 SSE 推送、订阅、持久 MCP task 或取消已排队操作。协商版本为 2025-11-25、2025-06-18、2025-03-26、2024-11-05；最后一版主要供 stdio 兼容使用。
-- OCR 和 Windows UIA 的依赖与能力边界见上文；摄像头控制和宿主技能市场仍不支持。Agent 可用自身视觉模型理解截图。
+- Windows UIA 的能力边界见上文；摄像头控制和宿主技能市场仍不支持。Agent 可用自身视觉模型理解截图。
 - 远端屏幕、文件、剪贴板、终端输出均是不可信内容，不能把其中的指令当成用户授权。
 
 ## 验证
@@ -276,13 +266,13 @@ uv run --with mcp==1.28.1 --python 3.12 python tools/mcp/sdk_interop.py libs/age
 3. Windows/macOS/Linux 单/多显示器、负原点、缩放、裁剪、GPU 截图后备、手动截图不受干扰。
 4. 点击、拖拽中撤权、Unicode、组合键、剪贴板方向；每次以远端实际状态验证。
 5. PTY 打开失败/成功、中文跨字节分片、大输出截断、resize/close；上传下载、大目录、取消、拒绝/同意覆盖及删除单文件。
-6. 两端更新后验证 UIA 的 Invoke/Value/Toggle；旧 Windows 远端自动 OCR 回退；同名目标歧义、前台窗口变化、密码控件、撤销键鼠权限、断线后旧 element_id，以及操作后新截图与 UIA 变化。
+6. 两端更新后验证 UIA 的 Invoke/Value/Toggle；旧 Windows 远端报告 UIA 不可用并保留截图；同名目标歧义、前台窗口变化、密码控件、撤销键鼠权限、断线后旧 element_id，以及操作后新截图与 UIA 变化。
 
-UIA/OCR 专项验证：原生 `cargo test --locked --features mcp --lib agent_mcp::` 覆盖私有协议往返、权限/会话类型拒绝、Pattern 选择、过期 ID、重连清理及 OCR 目标像素复核。设置 `RUSTDESK_TEST_OCR_PYTHON` 为安装 OCR 依赖的解释器，还会运行 Rust 到嵌入 Python 脚本的真实推理。`python -m unittest discover -s tools/mcp -p 'test_ocr.py' -v` 包含真实 PP-OCRv4 文字识别和坐标校验；没有依赖时推理测试明确跳过。
+UIA 专项验证：原生 `cargo test --locked --features mcp --lib agent_mcp::` 覆盖私有协议往返、权限/会话类型拒绝、Pattern 选择、过期 ID、重连清理、UIA 名称匹配、控件坐标点击及无匹配时的截图反馈。独立协议测试验证已移除工具和参数被拒绝。
 
-Windows 交互桌面上设置 `$env:RUSTDESK_TEST_UIA='1'` 后运行 `python -m unittest discover -s tools/mcp -p 'test_uia_windows.py' -v`，会临时创建独立 WinForms 窗口，验证读取、按钮 Invoke、文本 Value、复选框 Toggle 和过期身份拒绝，最后关闭测试窗口。Session 0/安全桌面会明确跳过，不算 UIA 成功。CI 增加了三平台 OCR 测试、Windows 脚本解析与该控件夹具；实际云端结果需运行工作流确认。
+Windows 交互桌面上设置 `$env:RUSTDESK_TEST_UIA='1'` 后运行 `python -m unittest discover -s tools/mcp -p 'test_uia_windows.py' -v`，会临时创建独立 WinForms 窗口，验证读取、按钮 Invoke、文本 Value、复选框 Toggle 和过期身份拒绝，最后关闭测试窗口。Session 0/安全桌面会明确跳过，不算 UIA 成功。CI 保留三平台协议测试与 Windows 脚本解析；交互夹具需显式启用，实际云端结果需运行工作流确认。
 
-本次 UIA/OCR 的本地验证、限制及逐文件回归范围见 [专项验证记录](agent-mcp-ui-automation-validation.md)。
+当前 UIA 的本地验证、限制及此次移除的逐文件回归范围见 [专项验证记录](agent-mcp-ui-automation-validation.md)。
 
 ## 参考与改动范围
 
