@@ -129,6 +129,9 @@ impl Store {
         let mut jobs = Vec::new();
         for entry in fs::read_dir(&self.root).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
+            if entry.file_name() == ".workspaces" {
+                continue;
+            }
             if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
                 let id = entry.file_name().to_string_lossy().into_owned();
                 jobs.push(match self.status(&id) {

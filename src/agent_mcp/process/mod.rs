@@ -3,6 +3,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 mod worker;
+mod workspace;
 
 use super::*;
 use hbb_common::{message_proto::Message, protobuf::UnknownValueRef};
@@ -214,6 +215,11 @@ pub(crate) fn dispatch(
             let _lock = STORE_LOCK.lock().unwrap();
             let store = store::Store::new(identity.root()?)?;
             let operation = request["operation"].as_str().ok_or("Missing operation")?;
+            if rustdesk_agent_mcp::workspace::is_tool(operation) {
+                return workspace::call(&store, operation, &request["arguments"], |dir| {
+                    identity.launch(dir)
+                });
+            }
             if operation == "run_process" {
                 store.create(&request["arguments"], |dir| identity.launch(dir))
             } else {

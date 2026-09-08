@@ -182,6 +182,7 @@ pub fn tools() -> Vec<Value> {
         }, &["element_id","value"]),
     ]);
     tools.extend(crate::process::tools());
+    tools.extend(crate::workspace::tools());
     tools
 }
 

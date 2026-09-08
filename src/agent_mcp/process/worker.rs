@@ -85,9 +85,14 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
     if state["state"] != "exited" {
         state["success"] = json!(false);
     }
+    if let Err(e) = super::workspace::finish(dir, &mut state) {
+        state["source_unchanged"] = json!(false);
+        state["workspace_error"] = json!(e);
+    }
     state["updated_at_ms"] = json!(store::now());
     state["finished_at_ms"] = json!(store::now());
-    store::write_json(&dir.join("state.json"), &state)
+    store::write_json(&dir.join("state.json"), &state)?;
+    super::workspace::release(dir)
 }
 
 fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
