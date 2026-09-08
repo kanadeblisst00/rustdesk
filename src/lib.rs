@@ -41,6 +41,11 @@ use common::*;
 mod auth_2fa;
 #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
 mod agent_mcp;
+
+#[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+pub fn mcp_worker_requested() -> bool {
+    agent_mcp::process::worker_requested()
+}
 #[cfg(not(target_os = "ios"))]
 mod clipboard;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
