@@ -181,6 +181,7 @@ pub fn tools() -> Vec<Value> {
             let mut p=observation();p.extend([("element_id",string()),("value",string())]);p
         }, &["element_id","value"]),
     ]);
+    tools.extend(crate::process::tools());
     tools
 }
 

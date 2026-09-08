@@ -3016,6 +3016,10 @@ impl Connection {
                 return true;
             }
             #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+            if crate::agent_mcp::process::dispatch(&msg, matches!(self.authed_conn_type(), Some(AuthConnType::Terminal)) && self.terminal_user_token.is_some() && Self::permission(keys::OPTION_ENABLE_TERMINAL, &self.control_permissions), self.terminal_user_token.as_ref().and_then(TerminalUserToken::to_terminal_service_token), &self.inner.tx) {
+                return true;
+            }
+            #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
             if crate::agent_mcp::remote::dispatch(&msg, self.peer_keyboard_enabled(), matches!(self.authed_conn_type(), Some(AuthConnType::Remote)), &self.agent_uia, &self.inner.tx) {
                 return true;
             }
@@ -5808,6 +5812,10 @@ impl Connection {
     }
 
     fn is_terminal_scoped_message(msg: &Message) -> bool {
+        #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+        if crate::agent_mcp::process::is_message(msg) {
+            return true;
+        }
         match msg.union.as_ref() {
             Some(message::Union::TerminalAction(_)) => true,
             Some(message::Union::Misc(misc)) => Self::is_terminal_scoped_misc(misc),
