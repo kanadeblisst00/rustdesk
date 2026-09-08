@@ -65,7 +65,8 @@ pub(super) fn info(id: SessionID, s: &FlutterSession) -> Value {
         .unwrap_or_default();
     json!({"session":id.to_string(),"device_id":lc.get_id(),
         "kind":if lc.conn_type==ConnType::TERMINAL{"terminal"}else if lc.conn_type==ConnType::FILE_TRANSFER{"files"}else{"desktop"},
-        "connected":connected,"needs_password":!connected && lc.agent_has_login_challenge(),
+        "connected":connected,"needs_password":!connected && lc.agent_auth.needs_password(),
+        "authentication":if connected {"authenticated"} else {lc.agent_auth.name()},
         "displays":displays,"current_display":lc.peer_info.as_ref().map(|p|p.current_display),
         "platform":lc.peer_info.as_ref().map(|p|p.platform.clone()),
         "permissions":{"keyboard":*s.server_keyboard_enabled.read().unwrap(),
@@ -99,7 +100,7 @@ pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {
     if let Some(s) = sessions::get_session_by_peer_id(peer.into(), conn) {
         if let Some(id) = s.agent_session_ids().first().copied() {
             track(id, false)?;
-            return Ok(success(info(id, &s)));
+            return super::auth::wait_for_session(id, &s, args);
         }
     }
     prune();
@@ -132,7 +133,7 @@ pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {
             sessions::get_session_by_session_id(&id).ok_or("Session was closed while opening")?;
         if !Arc::ptr_eq(&s, &registered) {
             // A user window may have connected to this peer concurrently with session_add.
-            return Ok(success(info(id, &registered)));
+            return super::auth::wait_for_session(id, &registered, args);
         }
         let handler = (*s).clone();
         // RustDesk's existing session loop owns its runtime on this dedicated OS thread.
@@ -161,7 +162,7 @@ pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {
             if let Some(id) = s.agent_session_ids().first().copied() {
                 track(id, headless)?;
                 let details = info(id, &s);
-                if details["connected"] == true || details["needs_password"] == true {
+                if super::auth::settled(&details) {
                     return Ok(success(details));
                 }
                 found = Some(details);
