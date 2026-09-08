@@ -73,6 +73,23 @@ stdio 代理默认允许 8 个并发 HTTP 请求，最多保留 32 个待完成�
 
 HTTP 为 `wait_for_event` 单独保留 4 个名额，普通请求保留 8 个名额。长事件等待不会占满状态查询、取消和其他操作的容量；超限返回 429。命令状态、磁盘日志和取消请求不等待源码/产物散列持有的元数据锁。
 
+## 无界面控制端
+
+控制端可以前台运行 `--mcp-server`，由已有的 systemd、launchd 或 Windows 进程管理器托管，无需打开 Flutter 窗口。Linux/Windows 使用 MCP 主程序；macOS 使用普通 MCP 应用内的 `Contents/MacOS/service --mcp-server`，避免经过 AppKit。隔离测试版的独立 `service` 不支持此入口。
+
+启动前设置以下进程环境变量：
+
+| 变量 | 含义 |
+| --- | --- |
+| `RUSTDESK_MCP_TOKEN` | 32–256 个无空格可见 ASCII 字符；提供有效令牌即启用监听 |
+| `RUSTDESK_MCP_BIND_ADDRESS` | IPv4 监听地址，例如 `127.0.0.1:59940` |
+| `RUSTDESK_MCP_DEVICES` | 原有设备白名单格式，以逗号分隔设备 ID |
+| `RUSTDESK_MCP_READ_ONLY` | `true` 或 `false`；构建、连接和传输需要 `false` |
+
+未提供的项沿用该用户已有 MCP 设置；环境覆盖不写入 GUI 设置文件，修改后需重启该进程。`--mcp-server --check` 只验证配置，不启动监听、不验证端口是否可绑定。正常启动在监听成功后输出含 `endpoint` 的 JSON；失败退出码为 2，输出不包含令牌。启动参数不会替你安装系统服务。
+
+此入口提供主动连接远端的 MCP 控制端。被控机器仍需运行正常 RustDesk 服务、开启终端访问并完成原有认证；不会借此注册或启动被控服务。所有 `connect_device` 必须带 `headless:true`。无界面控制端可以连接远端桌面，但无法为被控端创建图形登录会话；GUI 测试仍需要远端实际可用的桌面。
+
 ## 验证与回归面
 
 本地 macOS ARM64 验证真实命令 stdout/stderr、Unicode 环境值、非零退出码、重复请求、过期心跳、超时、日志限额、取消及孙进程清理；原生 MCP 回归 24 项通过，独立协议 29 项通过。Windows 平台模块通过 `windows 0.61.1`、`x86_64-pc-windows-gnu` 的交叉类型检查，尚不等于 Windows 实机运行验收。
@@ -95,3 +112,5 @@ HTTP 为 `wait_for_event` 单独保留 4 个名额，普通请求保留 8 个名
 macOS 系统服务是独立的 `service` 程序，不能只在 Flutter 的 `core_main` 注册 worker 参数。`src/lib.rs` 提供窄入口，`src/service.rs` 在任何服务初始化前分流 `--mcp-process-worker`；其他服务参数仍走原路径。已使用本机编译的 `service` 运行 `tools/mcp/test_process_worker.py`，三项实际执行测试通过。其他平台可设置 `RUSTDESK_MCP_TEST_EXECUTABLE` 为构建后的 MCP 可执行文件，再运行同一测试；未设置时明确跳过，不连接远端设备。
 
 环境检查仅增加 `process/environment.rs`、各平台 Identity 的只读环境读取、协议目录和能力字段，不更改命令注入或用户令牌选择。测试确认发现文件不会执行文件，并使用真实临时目录读取磁盘容量；Windows 环境与磁盘 API 经过交叉类型检查，登录用户环境仍需 Windows 实机验证。
+
+后台入口集中于 `src/agent_mcp/daemon.rs`；`src/core_main.rs`、`src/lib.rs`、`src/service.rs` 仅增加参数分流，隔离版参数白名单放行控制端入口。普通启动不进入新路径。MCP 路由只在后台模式拒绝可见连接。测试在隔离子进程中启动真实 HTTP 监听，确认无需 Flutter、正确令牌可读能力、错误令牌被拒绝、可见连接被拒绝；另验证环境参数及令牌不进入错误文本。

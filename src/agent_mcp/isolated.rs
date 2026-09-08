@@ -28,6 +28,7 @@ fn allowed_command(command: Option<&str>) -> bool {
         command,
         None | Some(
             "--version"
+                | "--mcp-server"
                 | "--build-date"
                 | "--no-server"
                 | "--connect"
