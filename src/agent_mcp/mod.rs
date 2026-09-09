@@ -1,4 +1,5 @@
 mod actions;
+mod files;
 pub(crate) mod auth;
 mod connection_queue;
 mod lifecycle;
@@ -310,6 +311,9 @@ impl Backend for DesktopBackend {
         if name.starts_with("mouse_") || name.starts_with("keyboard_") {
             return desktop::input(&s, &state, name, args);
         }
+        if matches!(name, "file_list" | "file_directory" | "file_transfer") {
+            return files::call(id, &s, &state, name, args);
+        }
         session::call(id, &s, &state, name, args)
     }
 }
@@ -394,15 +398,8 @@ pub fn event(id: SessionID, name: &str, data: &impl serde::Serialize) {
         }
     };
     if name == "file_dir" && data.get("is_local").and_then(Value::as_str) == Some("false") {
-        if let Some(raw) = data.get("value").and_then(Value::as_str) {
-            let snapshot = if raw.len() > 4 * 1024 * 1024 {
-                json!({"error":"Directory listing exceeds 4 MiB limit"})
-            } else {
-                serde_json::from_str(raw)
-                    .unwrap_or_else(|_| json!({"error":"Invalid directory listing"}))
-            };
-            *state.directory.lock().unwrap() = Some(snapshot);
-        }
+        state.events.push(name, files::directory_event(&state, &data));
+        return;
     }
     if name == "override_file_confirm" {
         let parse = |key| {
