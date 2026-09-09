@@ -43,6 +43,48 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class ProxyTest(unittest.TestCase):
+    def test_failures_are_classified_without_replaying_or_leaking_secrets(self):
+        message = {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "run_process"}}
+        for status, kind in [(401,"need_reauth"),(413,"payload_too_large"),(429,"service_busy"),(503,"service_unavailable")]:
+            with self.subTest(status=status), patch.object(proxy_module.http.client,"HTTPConnection") as connection, patch.object(proxy_module,"emit") as emit:
+                connection.return_value.getresponse.return_value = MagicMock(status=status)
+                proxy_module.forward_and_emit(proxy_module.Proxy("http://localhost:59940/mcp", TOKEN),message)
+                error = emit.call_args.args[0]["error"]
+                self.assertEqual(error["data"]["kind"],kind)
+                self.assertEqual(error["data"]["http_status"],status)
+                self.assertEqual(error["data"]["remote_job_state"],"unknown")
+                self.assertFalse(error["data"]["request_replayed"])
+                connection.return_value.request.assert_called_once()
+                self.assertNotIn(TOKEN,json.dumps(error))
+        with patch.object(proxy_module.http.client,"HTTPConnection") as connection, patch.object(proxy_module,"emit") as emit:
+            connection.return_value.request.side_effect = OSError("secret details " + TOKEN)
+            proxy_module.forward_and_emit(proxy_module.Proxy("http://localhost:59940/mcp", TOKEN),message)
+            self.assertEqual(emit.call_args.args[0]["error"]["data"]["kind"],"controller_unreachable")
+            self.assertNotIn(TOKEN,json.dumps(emit.call_args.args[0]))
+
+    def test_connect_timeout_fits_server_deadline_and_queue(self):
+        with patch.object(proxy_module.http.client,"HTTPConnection") as connection:
+            response = MagicMock(status=200)
+            response.read.return_value = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+            connection.return_value.getresponse.return_value = response
+            proxy_module.Proxy("http://localhost:59940/mcp",TOKEN).forward({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"connect_device","arguments":{"timeout_ms":120000}}})
+            connection.assert_called_once_with("127.0.0.1",59940,timeout=155)
+
+    def test_oversized_request_is_rejected_before_http_and_proxy_recovers(self):
+        with patch.object(proxy_module.http.client,"HTTPConnection") as connection, patch.object(proxy_module,"emit") as emit:
+            proxy_module.forward_and_emit(proxy_module.Proxy("http://localhost:59940/mcp",TOKEN),{"id":1,"payload":"x" * proxy_module.MAX_REQUEST})
+            connection.assert_not_called()
+            self.assertEqual(emit.call_args.args[0]["error"]["data"]["kind"],"payload_too_large")
+
+    def test_24k_argument_reaches_http_without_wrapper_field_truncation(self):
+        message = {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_process","arguments":{"args":["x" * 24576]}}}
+        with patch.object(proxy_module.http.client,"HTTPConnection") as connection:
+            response = MagicMock(status=200)
+            response.read.return_value = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+            connection.return_value.getresponse.return_value = response
+            proxy_module.Proxy("http://localhost:59940/mcp",TOKEN).forward(message)
+            self.assertEqual(json.loads(connection.return_value.request.call_args.kwargs["body"]),message)
+
     def test_address_and_token_validation(self):
         for url in ("http://evil.test/mcp", "https://127.0.0.1/mcp", "http://localhost/mcp?x=1",
                     "http://user:secret@localhost/mcp", "http://localhost/other",

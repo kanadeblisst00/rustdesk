@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod automation;
 pub mod catalog;
+mod errors;
 pub mod events;
 pub mod helper;
 pub mod http;
@@ -85,7 +86,7 @@ impl Server {
                 };
                 match self.backend.call(name, args) {
                     Ok(v) => v,
-                    Err(e) => json!({"content":[{"type":"text","text":e}],"isError":true}),
+                    Err(e) => errors::tool_failure(e, args),
                 }
             }
             "resources/list" => json!({"resources":[

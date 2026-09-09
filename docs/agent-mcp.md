@@ -285,3 +285,12 @@ Windows 交互桌面上设置 `$env:RUSTDESK_TEST_UIA='1'` 后运行 `python -m 
 最初的 MCP 实现位于新建的 `libs/agent_mcp`、`src/agent_mcp`、Flutter 设置组件和 `tools/mcp`。已有运行路径只增加编译门控的入口：`src/flutter.rs` 主事件流启动、会话事件及解码帧观察；`src/client/io_loop.rs` 远端剪贴板观察及专用截图回复分流；`src/client.rs` 登录 challenge 只读查询；`src/flutter_ffi.rs` 本地能力/状态查询；`src/lib.rs` 模块声明。它们是接入真实会话所需的薄钩子，关闭 feature 时仍走原路径。构建清单、`build.py`、安全设置入口和新增翻译键是打包与可发现性所需；没有改动服务器认证、原有输入实现或子模块版本。新增 UIA 的收发入口位于 `src/server/connection.rs` 和 `src/client/io_loop.rs`，仅处理带版本标识的私有扩展。
 
 独立检查修复仅影响 `libs/enigo/src/dsl.rs` 的解析错误格式化和 `libs/scrap/src/quartz/display.rs` 的 macOS 显示器枚举缓冲区初始化，分别消除递归格式化与未初始化值引起的未定义行为；不改变输入执行和显示器选择逻辑。同步远程带入的 WebRTC 及 `hbb_common` 更新保留为上游已有提交，不混入 MCP 功能提交。
+
+
+## 构建反馈后的连接诊断
+
+`connect_device.timeout_ms` 最大 120000。stdio 代理仅为此调用增加 HTTP 等待时间，覆盖连接期限与最多 30 秒的同设备排队；其他调用仍为原 70 秒。可见连接仍由同一进程投递 Flutter 主窗口事件。历史子进程路由缺陷已经修过，本次没有证据证明现场使用的构建仍存在同一根因。GUI 通道不可用时可显式用 `headless:true`；不自动新建隐藏连接，以免与迟到的可见连接并存。
+
+工具错误保留原 `content`，并为已知会话故障添加 `structuredContent.error.kind`：`session_disconnected`、`session_auth_required`、`service_unavailable`、`remote_request_timeout`。stdio 转发错误使用 JSON-RPC `error.data.kind`：401 是 `need_reauth`，连接/读取失败是 `controller_unreachable`，413 是 `payload_too_large`，429 是 `service_busy`。HTTP/MCP 无法观察宿主插件是否整体掉线，不能凭 `fetch failed` 断言是远端会话或令牌失效；插件完全断开时，本程序也无法返回诊断。
+
+这些错误不重放请求，不声称远端 job 已停止；重连同一设备、同一 OS 身份后用新 session 查询原 `job_id` 或 `list_processes`。控制端服务重启或重新鉴权不等于命令失败。请求体上限为 1 MiB；外层宿主在请求到达 MCP 前报告 `Missing required fields: namespace, toolName`，不属于此 RustDesk 工具 schema，不能通过本程序修复该截断。源码/二进制传输优先使用有界文件分片，不塞入 `run_process.args`。
