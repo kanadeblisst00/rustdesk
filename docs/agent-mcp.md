@@ -219,9 +219,9 @@ OCR 功能已移除：`get_screen_text`、`find_text` 和 `include_ocr` 参数�
 
 ### 文件
 
-以 `kind:"files"` 连接。`file_list` 发出目录请求；从返回的 `after_cursor` 等待 `file_dir` 后，使用 `file_directory` 分页读取。目录快照最多 4 MiB，超过上限明确报错；同一普通窗口也能导航目录，必须核对返回的 `path`。
+以 `kind:"files"` 连接。`file_list` 始终查询远端目录，默认等最多 3 秒直接返回解析后的首屏 `entries`；如有 `next_offset`，使用 `file_directory` 续页。超时尚未收到结果时返回 `pending:true`，再从 `after_cursor` 等待 `file_dir`。每页受 48 KiB 条目预算约束，实际数量可能小于 `limit`。目录快照最多 4 MiB，超过上限明确报错；同一普通窗口也能导航目录，必须核对返回的 `path`。
 
-`file_transfer` 的 `direction` 为 `upload` 或 `download`，`source` 是来源端路径，`destination` 是接收端路径。返回 `job_id` 后观察 `job_progress`、`job_done`、`job_error`、`override_file_confirm`。事件沿用 RustDesk UI 格式，一些数字/布尔字段是字符串，`file_dir.value` 是 JSON 字符串。
+`file_transfer` 的 `direction` 为 `upload` 或 `download`，`source` 是来源端路径，`destination` 是接收端路径。上传 `source` / 下载 `destination` 必须是运行 RustDesk MCP HTTP 服务的控制端进程可访问的绝对路径；它们并不自动映射到 Cursor、stdio 代理、容器或 agent 工作区。上传在排队前检查本地可读性，失败带 `side:local`、路径、操作与 OS 错误码；成功排队响应带两端路径。异步传输期间的其他错误仍须结合 job 事件排查。agent 工作区不共享该文件系统时，用终端的 `write_workspace_file` / `read_workspace_file`，见[构建工具](agent-mcp-build-jobs.md)。返回 `job_id` 后观察 `job_progress`、`job_done`、`job_error`、`override_file_confirm`。事件沿用 RustDesk UI 格式，一些数字/布尔字段是字符串，小型 `file_dir.value` 保留原 JSON 字符串格式；超过 64 KiB 的事件改为 `paginated:true` 和带 `path`、`entry_count`、`entries`、`next_offset` 的首屏，不再丢弃。优先使用 `file_list` 的同步结果与 `file_directory`。
 
 覆盖确认必须匹配 MCP 创建的 job、文件序号及方向。`file_remove` 仅删除单文件且要求 `confirm:true`，不递归删除目录。文件工具不会限制任意路径到沙箱；上传可读取本地文件，下载可写入本地文件，需像终端一样谨慎授权。
 
