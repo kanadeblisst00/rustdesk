@@ -17,6 +17,13 @@ MAX_RESPONSE = 96 * 1024 * 1024
 EMIT_LOCK = threading.Lock()
 
 
+class ForwardError(ValueError):
+    def __init__(self, kind, message, **details):
+        super().__init__(message)
+        self.kind = kind
+        self.details = details
+
+
 class Proxy:
     def __init__(self, url, token):
         target = urlsplit(url)
@@ -51,8 +58,16 @@ class Proxy:
     def forward(self, message):
         payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(payload) > MAX_REQUEST:
-            raise ValueError("MCP request exceeds 1 MiB")
-        connection = http.client.HTTPConnection(self.host, self.port, timeout=70)
+            raise ForwardError("payload_too_large", "MCP request exceeds 1 MiB; use write_workspace_file chunks", max_bytes=MAX_REQUEST)
+        timeout = 70
+        if isinstance(message, dict) and message.get("method") == "tools/call":
+            params = message.get("params", {})
+            if isinstance(params, dict) and params.get("name") == "connect_device":
+                arguments = params.get("arguments", {})
+                requested = arguments.get("timeout_ms", 12000) if isinstance(arguments, dict) else 12000
+                if isinstance(requested, (int, float)) and not isinstance(requested, bool):
+                    timeout = max(timeout, min(120000, max(0, requested)) / 1000 + 35)
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=timeout)
         try:
             connection.request("POST", "/mcp", body=payload, headers={
                 "Authorization": "Bearer " + self.token,
@@ -64,7 +79,13 @@ class Proxy:
             if response.status == 202:
                 return None
             if response.status != 200:
-                raise ValueError("RustDesk MCP HTTP status %d" % response.status)
+                kind, detail = {
+                    401: ("need_reauth", "RustDesk MCP rejected the controller token; refresh credentials and reconnect the plugin"),
+                    413: ("payload_too_large", "MCP request exceeds the HTTP body limit; use write_workspace_file chunks"),
+                    429: ("service_busy", "RustDesk MCP request capacity is full; wait before another request"),
+                    503: ("service_unavailable", "RustDesk MCP service is disabled, stopping or unavailable"),
+                }.get(response.status, ("http_error", "RustDesk MCP HTTP request failed"))
+                raise ForwardError(kind, detail, http_status=response.status)
             data = response.read(MAX_RESPONSE + 1)
             if len(data) > MAX_RESPONSE:
                 raise ValueError("MCP response exceeds 96 MiB")
@@ -92,18 +113,26 @@ def forward_and_emit(proxy, message):
         response = proxy.forward(message)
         if response is not None:
             emit(response)
-    except (ValueError, OSError, http.client.HTTPException):
+    except (ValueError, OSError, http.client.HTTPException) as exc:
         # A failed reply does not prove that the action failed. Never replay it here.
         if isinstance(message, dict) and "id" not in message:
             print("MCP notification could not be forwarded", file=sys.stderr)
             return
-        emit_forward_error(message)
+        if isinstance(exc, ForwardError):
+            emit_forward_error(message, kind=exc.kind, detail=str(exc), details=exc.details)
+        elif isinstance(exc, (OSError, http.client.HTTPException)):
+            emit_forward_error(message, kind="controller_unreachable", detail="Cannot reach the RustDesk MCP controller or read its response; check the service and plugin transport")
+        else:
+            emit_forward_error(message, kind="invalid_response", detail="Invalid response from RustDesk MCP controller")
 
 
-def emit_forward_error(message, code=-32000):
+def emit_forward_error(message, code=-32000, *, kind="invalid_request", detail="Invalid MCP request", details=None):
     request_id = message.get("id") if isinstance(message, dict) else None
     emit({"jsonrpc": "2.0", "id": request_id, "error": {
-        "code": code, "message": "Unable to forward MCP request; verify RustDesk service, token and request size"
+        "code": code, "message": detail, "data": {
+            "kind": kind, **(details or {}), "request_replayed": False,
+            "remote_job_state": "unknown", "recovery": "Transport failure does not cancel durable jobs. Reconnect to the same device and OS identity; query the SAME job_id before retrying."
+        }
     }})
 
 
@@ -128,10 +157,13 @@ def main():
                 if len(line) > MAX_REQUEST:
                     while line and not line.endswith(b"\n"):
                         line = sys.stdin.buffer.readline(MAX_REQUEST + 1)
-                    raise ValueError("MCP request exceeds 1 MiB")
+                    raise ForwardError("payload_too_large", "MCP request exceeds 1 MiB; use write_workspace_file chunks", max_bytes=MAX_REQUEST)
                 message = json.loads(line)
             except ValueError as exc:
-                emit_forward_error(None, -32700 if isinstance(exc, json.JSONDecodeError) else -32000)
+                if isinstance(exc, ForwardError):
+                    emit_forward_error(None, kind=exc.kind, detail=str(exc), details=exc.details)
+                else:
+                    emit_forward_error(None, -32700, kind="invalid_json", detail="Invalid or truncated JSON request")
                 continue
             if isinstance(message, dict) and message.get("method") == "initialize":
                 while pending:
