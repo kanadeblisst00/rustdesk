@@ -69,6 +69,223 @@ fn validates_paths_nul_and_environment() {
     request["args"] = json!(["$(not-a-shell)"]);
     request["env"] = json!([{"name":"Path","value":"one"},{"name":"PATH","value":"two"}]);
     assert!(model::validate("run_process", &request).is_err());
+    request["env"] = json!([{"name":"HTTP_PROXY","value":""},{"name":"HTTPS_PROXY","value":""}]);
+    assert!(model::validate("run_process", &request).is_ok());
+    request["unset_env"] = json!(["http_proxy"]);
+    assert!(model::validate("run_process", &request).is_err());
+    request["unset_env"] = json!(["ALL_PROXY"]);
+    assert!(model::validate("run_process", &request).is_ok());
+    request["shell"] = json!("cmd");
+    assert!(model::validate("run_process", &request).is_err());
+    request["executable"] = json!("cmd.exe");
+    request["args"] = json!(["call \"C:\\Program Files\\build.cmd\""]);
+    assert!(model::validate("run_process", &request).is_ok());
+    request["args"] = json!(["/c", "echo wrong wrapper"]);
+    assert!(model::validate("run_process", &request).is_err());
+    assert!(model::validate(
+        "read_process_output",
+        &json!({"session":"test","job_id":"valid","stream":"stdout","offset":0,"tail_lines":2})
+    )
+    .is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn empty_environment_values_and_unset_are_distinct_in_real_commands() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let mut request = shell_spec(
+        "env",
+        "printf '%s:%s' \"${MCP_EMPTY_VALUE+x}\" \"$MCP_EMPTY_VALUE\"; /usr/bin/env",
+    );
+    request["env"] = json!([{"name":"MCP_EMPTY_VALUE","value":""}]);
+    request["unset_env"] = json!(["HOME"]);
+    model::validate("run_process", &request).unwrap();
+    store.create(&request, |_| Ok(())).unwrap();
+    worker::run(&store.directory("env").unwrap()).unwrap();
+    let state = store.status("env").unwrap();
+    assert_eq!(state["success"], true);
+    assert_eq!(state["timeout_ms"], 3_600_000);
+    assert_eq!(state["remaining_timeout_ms"], 0);
+    assert!(state["log_paths"]["stdout"].is_string());
+    let result = store
+        .call(
+            "read_process_output",
+            &json!({"job_id":"env","stream":"stdout"}),
+        )
+        .unwrap();
+    let text = result["text"].as_str().unwrap();
+    assert!(text.starts_with("x:"));
+    assert!(!text.lines().any(|line| line.starts_with("HOME=")));
+}
+
+#[test]
+fn raw_log_bytes_survive_failed_decoding_and_offset_reads() {
+    let temp = Temp::new();
+    let store = temp.store();
+    store.create(&spec("binary"), |_| Ok(())).unwrap();
+    std::fs::write(
+        store.directory("binary").unwrap().join("stdout.log"),
+        [0xcf, 0xb5, 0xcd, 0xb3],
+    )
+    .unwrap();
+    let first = store
+        .call(
+            "read_process_output",
+            &json!({"job_id":"binary","stream":"stdout","max_bytes":1,"encoding":"utf-8"}),
+        )
+        .unwrap();
+    assert!(first["text"].is_null());
+    assert_eq!(first["data_base64"], "zw==");
+    assert_eq!(first["next_offset"], 1);
+    let rest = store
+        .call(
+            "read_process_output",
+            &json!({"job_id":"binary","stream":"stdout","offset":1,"encoding":"base64"}),
+        )
+        .unwrap();
+    assert_eq!(rest["data_base64"], "tc2z");
+    assert_eq!(rest["next_offset"], 4);
+    std::fs::write(
+        store.directory("binary").unwrap().join("stdout.log"),
+        b"first\nsecond\nthird\n",
+    )
+    .unwrap();
+    let tail = store
+        .call(
+            "read_process_output",
+            &json!({"job_id":"binary","stream":"stdout","tail_lines":2}),
+        )
+        .unwrap();
+    assert_eq!(tail["text"], "second\nthird\n");
+    assert_eq!(tail["offset"], 6);
+    assert_eq!(tail["next_offset"], 19);
+    let bounded = store
+        .call(
+            "read_process_output",
+            &json!({"job_id":"binary","stream":"stdout","tail_lines":2,"max_bytes":3}),
+        )
+        .unwrap();
+    assert_eq!(bounded["text"], "rd\n");
+    assert_eq!(bounded["truncated_start"], true);
+}
+
+#[test]
+#[cfg(unix)]
+fn timeout_extension_is_durable_and_does_not_resume_completed_jobs() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let mut request = shell_spec("extend", "sleep 0.3; printf completed");
+    request["timeout_ms"] = json!(100);
+    store.create(&request, |_| Ok(())).unwrap();
+    let restored = temp.store();
+    let update = json!({"job_id":"extend","timeout_ms":2000});
+    assert_eq!(
+        restored.call("extend_process_timeout", &update).unwrap()["requested_timeout_ms"],
+        2000
+    );
+    assert!(restored
+        .call(
+            "extend_process_timeout",
+            &json!({"job_id":"extend","timeout_ms":500})
+        )
+        .is_err());
+    worker::run(&restored.directory("extend").unwrap()).unwrap();
+    let state = restored.status("extend").unwrap();
+    assert_eq!(state["success"], true);
+    assert_eq!(state["timeout_ms"], 2000);
+    assert!(restored.call("extend_process_timeout", &update).is_err());
+}
+
+#[test]
+fn workspace_bytes_upload_resume_checksum_download_and_reseal() {
+    use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+    use sha2::{Digest, Sha256};
+    let temp = Temp::new();
+    let store = temp.store();
+    let request = json!({"session":"test","workspace_id":"bytes","source_revision":"test"});
+    let workspace = workspace::call(&store, "create_workspace", &request, |_| panic!()).unwrap();
+    let root = PathBuf::from(workspace["paths"]["root"].as_str().unwrap());
+    let data: Vec<_> = (0..40000).map(|i| (i % 256) as u8).collect();
+    let hash = format!("{:x}", Sha256::digest(&data));
+    let mut upload = json!({"session":"test","workspace_id":"bytes","path":"source/nested/input.bin","offset":0,"total_bytes":data.len(),"sha256":hash,"data_base64":STANDARD.encode(&data[..16384])});
+    model::validate("write_workspace_file", &upload).unwrap();
+    let first = workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap();
+    assert_eq!(first["next_offset"], 16384);
+    assert!(!root.join("source/nested/input.bin").exists());
+    assert_eq!(
+        workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap(),
+        first
+    );
+    upload["data_base64"] = json!(STANDARD.encode(b"conflict"));
+    assert!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).is_err());
+    for offset in [16384, 32768] {
+        upload["offset"] = json!(offset);
+        upload["data_base64"] =
+            json!(STANDARD.encode(&data[offset..data.len().min(offset + 16384)]));
+        workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap();
+    }
+    assert_eq!(
+        workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap()["complete"],
+        true
+    );
+    assert_eq!(
+        std::fs::read(root.join("source/nested/input.bin")).unwrap(),
+        data
+    );
+    let mut received = Vec::new();
+    loop {
+        let part = workspace::call(&store,"read_workspace_file",&json!({"workspace_id":"bytes","path":"source/nested/input.bin","offset":received.len()}), |_| panic!()).unwrap();
+        let bytes = STANDARD
+            .decode(part["data_base64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            part["chunk_sha256"],
+            format!("{:x}", Sha256::digest(&bytes))
+        );
+        received.extend(bytes);
+        if part["eof"] == true {
+            break;
+        }
+    }
+    assert_eq!(received, data);
+    let seal = workspace::call(&store, "seal_workspace", &request, |_| panic!()).unwrap();
+    std::fs::write(root.join("source/resources_rc.py"), "generated").unwrap();
+    let reseal = workspace::call(&store, "seal_workspace", &request, |_| panic!()).unwrap();
+    assert_ne!(seal["source"]["sha256"], reseal["source"]["sha256"]);
+    for path in [
+        "source/../escape",
+        "source/nested/../../escape",
+        "source/file:stream",
+        "../escape",
+        "workspace.json",
+    ] {
+        upload["path"] = json!(path);
+        assert!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).is_err());
+    }
+    upload["path"] = json!("artifacts/bad.bin");
+    upload["offset"] = json!(0);
+    upload["total_bytes"] = json!(3);
+    upload["data_base64"] = json!(STANDARD.encode(b"bad"));
+    assert!(
+        workspace::call(&store, "write_workspace_file", &upload, |_| panic!())
+            .unwrap_err()
+            .contains("SHA-256 mismatch")
+    );
+    assert!(!root.join("artifacts/bad.bin").exists());
+    upload["sha256"] = json!(format!("{:x}", Sha256::digest(b"bad")));
+    workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap();
+    std::fs::write(root.join("busy.json"), "{}").unwrap();
+    assert!(
+        workspace::call(&store, "write_workspace_file", &upload, |_| panic!())
+            .unwrap_err()
+            .contains("leased")
+    );
+    assert!(
+        workspace::call(&store, "read_workspace_file", &upload, |_| panic!())
+            .unwrap_err()
+            .contains("leased")
+    );
 }
 
 #[tokio::test]

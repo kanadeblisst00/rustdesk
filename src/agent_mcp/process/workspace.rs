@@ -41,12 +41,19 @@ fn relative(base: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(result)
 }
 
-struct Budget {
+pub(super) struct Budget {
     bytes: u64,
     limit: u64,
     started: Instant,
 }
 impl Budget {
+    pub(super) fn new(limit: u64) -> Self {
+        Self {
+            bytes: 0,
+            limit,
+            started: Instant::now(),
+        }
+    }
     fn check(&self) -> Result<(), String> {
         if self.bytes > self.limit || self.started.elapsed() > Duration::from_secs(10) {
             return Err(
@@ -58,7 +65,7 @@ impl Budget {
     }
 }
 
-fn hash_file(path: &Path, budget: &mut Budget) -> Result<(u64, String), String> {
+pub(super) fn hash_file(path: &Path, budget: &mut Budget) -> Result<(u64, String), String> {
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.file_type().is_symlink() {
         return Err("Manifest accepts regular files only".into());
@@ -146,7 +153,7 @@ fn source_snapshot(dir: &Path) -> Result<Value, String> {
     )
 }
 
-fn idle(dir: &Path) -> Result<(), String> {
+pub(super) fn idle(dir: &Path) -> Result<(), String> {
     if dir.join("busy.json").exists() {
         return Err(
             "Workspace is leased by a command; query get_workspace and its job status".into(),
@@ -203,7 +210,7 @@ pub(super) fn call(
         if dir.exists() {
             let existing = store::read_json(&dir.join("workspace.json"))?;
             if existing["source_revision"] != args["source_revision"] {
-                return Err("Workspace ID already has another source_revision".into());
+                return Err(format!("Workspace ID already has another source_revision: existing={}, source_sha256={}. Use get_workspace to inspect it or choose a new ID; existing sources are never overwritten implicitly", existing["source_revision"], existing["source"]["sha256"]));
             }
         } else {
             store::private_dir(&store.root.join(DIRECTORY))?;
@@ -232,6 +239,9 @@ pub(super) fn call(
         return Err("Workspace must be a real directory".into());
     }
     let mut metadata = store::read_json(&dir.join("workspace.json"))?;
+    if matches!(operation, "read_workspace_file" | "write_workspace_file") {
+        return super::workspace_files::call(&dir, operation, args);
+    }
     match operation {
         "create_workspace" | "get_workspace" => {
             metadata["paths"] = json!({"root":dir,"source":dir.join("source"),"build":dir.join("build"),"artifacts":dir.join("artifacts"),"reports":dir.join("reports")});
@@ -272,10 +282,11 @@ pub(super) fn call(
             }
             let mut lease = Lease::acquire(&dir, job)?;
             let current = source_snapshot(&dir)?;
-            if metadata["source"]["sha256"].is_null()
-                || metadata["source"]["sha256"] != current["sha256"]
-            {
-                return Err("Source is unsealed or changed; seal_workspace after completing source preparation".into());
+            if metadata["source"]["sha256"].is_null() {
+                return Err("Source is unsealed; run seal_workspace after upload/checkout, then retry with the same job_id. Use run_process for preparation commands that do not require sealed source".into());
+            }
+            if metadata["source"]["sha256"] != current["sha256"] {
+                return Err(format!("Source changed: sealed_sha256={}, current_sha256={}. Review source/generated-file changes, call seal_workspace again to accept the new snapshot, then retry. Keep generated files in build/ when possible; run_process does not require a seal", metadata["source"]["sha256"], current["sha256"]));
             }
             let result = store.create(&command, |job_dir| {
                 metadata["latest_job_id"] = json!(job);

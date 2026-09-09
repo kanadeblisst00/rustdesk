@@ -19,14 +19,15 @@
 }
 ```
 
-以上为 `run_process` 参数。`executable` 与 `args` 分开传递，服务不拼接 shell 命令；确需 shell 时明确指定 shell 和其参数。`cwd` 必须是目标平台的绝对路径。使用绝对可执行文件路径可避免 PATH 差异。环境覆盖值会与请求一起保存到远端用户私有目录，避免把长期凭据放在参数中。
+以上为 `run_process` 参数。`shell` 默认 `none`，`executable` 与 `args` 使用普通 OS argv 规则。Windows 可显式选 `shell:"cmd"` 或 `shell:"powershell"`；`executable` 必须是对应 shell，`args` 仅含一条脚本文本，不再自行加 `/c` 或 `-Command`。JSON 中的引号只转义一次。`cwd` 必须是目标平台的绝对路径。使用绝对可执行文件路径可避免 PATH 差异。环境覆盖值会与请求一起保存到远端用户私有目录，避免把长期凭据放在参数中。
 
 | 工具 | 返回与用途 |
 | --- | --- |
 | `run_process` | 接受命令并返回 `starting`，并不代表开始运行或成功 |
-| `get_process_status` | 状态、起止时间、退出码、成功标志、两路日志长度 |
+| `get_process_status` | 状态、PID（启动后）、起止时间、退出码、日志路径、运行时长、剩余超时和 `poll_after_ms` |
+| `extend_process_timeout` | 延长活动任务的总超时（自开始计时，最长 24 小时）；查询 `timeout_ms` 确认 worker 已应用 |
 | `list_processes` | 当前远端 OS 用户的保留任务；重连后找回任务 |
-| `read_process_output` | `stream:stdout/stderr`、`offset`、`max_bytes`；保存 `next_offset` 续读 |
+| `read_process_output` | 按 `offset` 续读；或用互斥的 `tail_lines` 读取末尾 N 行；可选 `encoding` |
 | `cancel_process` | 写入取消请求；继续查询直至 `cancelled` 或其他最终状态 |
 | `remove_process` | 显式删除已完成任务及其日志；拒绝活动或未知状态 |
 
@@ -36,7 +37,11 @@
 
 任务由独立原生 worker 运行，断开连接或关闭 RustDesk 控制窗口不会主动取消任务；重连同一设备、同一 OS 身份后可以继续查询。任务信息、stdout 和 stderr 保存在 Unix 的 `~/.rustdesk-mcp-jobs`，Windows 的授权用户 `%LOCALAPPDATA%\RustDeskMCP\jobs`。`list_processes.storage_path` 返回实际路径。Windows 服务通过终端已授权的用户令牌访问目录及启动 worker，不回退为 SYSTEM 执行。
 
-每用户最多 16 个活动/未知任务、256 个保留任务。默认超时 1 小时，最大 24 小时。每路日志默认上限 16 MiB，可设至 256 MiB；达到上限后终止命令，明确返回 `log_limit` 和 `logs_truncated:true`，不默默丢弃头部输出。单次日志读取最多 64 KiB，`data_base64` 是字节原文，`text` 仅作 UTF-8 容错显示。完成后可通过文件传输下载日志，再显式删除保留任务。
+每用户最多 16 个活动/未知任务、256 个保留任务。默认超时 1 小时，最大 24 小时。每路日志默认上限 16 MiB，可设至 256 MiB；达到上限后终止命令，明确返回 `log_limit` 和 `logs_truncated:true`，不默默丢弃头部输出。单次日志读取最多 64 KiB，`data_base64` 是字节原文，`text` 使用严格解码：`encoding` 可选 `auto`、`utf-8`、`oem`、`cp936`、`base64`。Windows 自动模式比较 UTF-8 与本机 OEM，存在歧义或无效序列时返回 `text:null`、`encoding` 和 `decoding_error`，绝不使用替换字符掩盖问题。GBK 的“系统”字节恰好也是合法 UTF-8，不能把 UTF-8 解析成功当成编码检测成功。中文 Windows 工具明确使用 GBK 时传 `encoding:"cp936"`；分片可能切开多字节字符，应按 `data_base64` 拼接后解码。`tail_lines` 仍受 `max_bytes` 上限约束，`truncated_start:true` 表示开头被截断。完成后可通过文件传输下载日志，再显式删除保留任务。
+
+`env:[{"name":"HTTP_PROXY","value":""}]` 设置空字符串；`unset_env:["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY"]` 删除继承变量。不能在两处重复指定同一名称。Windows 保留授权身份的 PATH，并在末尾补齐实际系统目录、`WindowsPowerShell\v1.0` 和 `Wbem`；显式 `env`/`unset_env` 最后应用。
+
+`timeout_ms` 是整个命令的执行上限，并非单次 MCP 等待时间。`timed_out` 表示已终止进程树，已有 exe 或其他部分产物不把它变成成功。需要延长时，在超时前调用 `extend_process_timeout(job_id, timeout_ms)`，数值为从原开始时间计算的总时长；返回请求已保存后仍需查询有效 `timeout_ms`。新 worker 才支持该操作；已结束/未知任务不会被恢复或重跑。
 
 取消和超时清理 Unix 进程组或 Windows Job Object，包含通常的子孙进程。Unix 程序若主动脱离进程组、通过其他服务启动任务，其生命周期需由项目自身管理。worker 异常退出、重启机器或磁盘不可写可能只留下未知状态；不会自动重放命令。构建 worker 没有沙箱或权限提升能力，权限与已授权终端用户一致。
 
@@ -45,13 +50,27 @@ Windows 进程树在暂停状态加入 Job Object 后才恢复执行；用户令
 ## 工作区、源码与产物
 
 1. `create_workspace(workspace_id, source_revision)` 返回独立的 `source`、`build`、`artifacts`、`reports` 绝对路径。每个平台、每次独立构建使用不同 ID；相同 ID 不能改指向另一版本。最多保留 64 个工作区。
-2. 使用文件会话上传源码，或用普通 `run_process` 执行明确的 Git clone/checkout 命令。`source_revision` 是调用方声明，服务不把标签当作已验证的 Git 提交；需要时另外执行 `git rev-parse HEAD` 核对。
+2. 使用同一终端的 `write_workspace_file` 分块上传源码，或使用文件会话上传，或用普通 `run_process` 执行明确的 Git clone/checkout 命令。`source_revision` 是调用方声明，服务不把标签当作已验证的 Git 提交；需要时另外执行 `git rev-parse HEAD` 核对。
 3. `seal_workspace(workspace_id)` 对源码目录生成 SHA-256 指纹。忽略 `.git`、`__pycache__`、`.pytest_cache` 目录，拒绝符号链接和特殊文件；最多 4096 项、512 MiB、32 层目录，单次计算最多 10 秒。超过限制应拆分输入，或使用普通命令任务执行项目自己的校验步骤。
 4. `run_workspace_process` 接受普通命令参数和 `workspace_id`，但 `cwd` 改为工作区相对路径，默认 `build`。启动前重新核对源码指纹，同一工作区只能有一个此类任务；忙时拒绝，其他工作区仍可独立构建。命令完成后记录 `source_unchanged`，再释放工作区。
-5. 最后一个任务完成后，调用 `get_artifact_manifest(workspace_id, job_id, paths)`，例如 `paths:["artifacts/app.zip","reports/tests.xml"]`，返回每个文件的远端路径、长度、SHA-256 和任务记录的源码信息。选择最多 64 个文件、合计 2 GiB，计算最多 10 秒。使用文件传输下载后重新计算 SHA-256；清单本身不执行下载。
+5. 最后一个任务完成后，调用 `get_artifact_manifest(workspace_id, job_id, paths)`，例如 `paths:["artifacts/app.zip","reports/tests.xml"]`，返回每个文件的远端路径、长度、SHA-256 和任务记录的源码信息。选择最多 64 个文件、合计 2 GiB，计算最多 10 秒。通过同一终端的 `read_workspace_file` 分块下载并重新计算 SHA-256，也可使用文件传输；清单本身不执行下载。
 6. 下载完成后显式 `remove_workspace` 删除源码、构建目录和产物；任务磁盘日志仍单独保留。
 
 清单只允许关联工作区最后一个任务，防止后续构建覆盖文件后仍冒用旧任务 ID。它证明采集时的文件内容，不证明每个文件都由该命令生成；`command_success`、`source_unchanged_after_job`、`revision_verified` 分开报告。源码在命令运行中被修改、产物在采集后被改写，都需要调用方处理。工作区锁只协调 `run_workspace_process`，不会阻止用户或其他文件/终端工具写入；不是文件系统沙箱。
+
+`write_workspace_file` 接受 `workspace_id`、`path`（如 `source/project.tar.gz`）、`offset`、`total_bytes`、整文件 `sha256` 和 `data_base64`。每片最多 16 KiB 原始字节，编码后最多 21848 字符；文件最多 512 MiB。顺序发送，按 `next_offset` 续传，同一片原样重试不会重复写入。最终校验通过才发布文件，已有不同内容不会被覆盖；哈希不符时删除临时上传并从 0 重传。同一工作区最多 64 个未完成上传；删除工作区会一起清理临时上传。路径拒绝穿越和链接，父目录按需创建。目标文件系统须支持硬链接，以保证发布时不覆盖并发创建的目标；不支持时明确报错。
+
+`read_workspace_file` 接受 `workspace_id`、`path`、`offset`、`max_bytes`（最多 16384），返回原始 base64、`chunk_sha256`、`next_offset`、`eof`。两种工具都要求工作区没有活动/未知租约，沿用终端用户的原有权限，无需新增文件会话。下载产物时先保存 `get_artifact_manifest` 的整文件 SHA-256，拼接全部字节后核对，不能仅凭每片校验判断文件在整个下载期间未变化。
+
+`seal_workspace` 可以在空闲工作区重复调用。若构建生成 `source/resources_rc.py` 等文件，先核对变化，再重新封存并以新 `job_id` 重跑；既有 job 不会因重封存而执行第二次。建议把生成文件放在 `build/`。不能自动忽略所有新增文件或自动接受源码修改；普通 `run_process` 无需封存，适合准备与临时诊断命令。
+
+Windows shell 示例（可执行文件路径需按目标实际安装核对）：
+
+```json
+{"session":"<终端 UUID>","job_id":"build-vs-001","executable":"C:\\Windows\\System32\\cmd.exe","shell":"cmd","args":["call \"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cl /?"],"cwd":"C:\\builds","timeout_ms":7200000}
+```
+
+`cmd.exe /c` 不遵循普通 C argv 引号规则，此入口使用 [`CommandExt::raw_arg`](https://doc.rust-lang.org/std/os/windows/process/trait.CommandExt.html) 传递明确的脚本文本。PowerShell 入口使用 UTF-16LE `-EncodedCommand`；保留 PowerShell 自身的退出码规则，脚本应显式传播外部程序的 `$LASTEXITCODE`。直接 argv 路径保持原行为。
 
 工作区保存在命令存储目录的 `.workspaces` 子目录。worker 异常退出留下的租约不会自动抢占，以免两个构建写入同一目录。用 `get_workspace` 查看租约的任务 ID，先查明未知任务状态再人工恢复。
 

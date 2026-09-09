@@ -14,13 +14,15 @@ EXECUTABLE = os.environ.get("RUSTDESK_MCP_TEST_EXECUTABLE")
 
 @unittest.skipUnless(EXECUTABLE, "set RUSTDESK_MCP_TEST_EXECUTABLE to a built MCP executable")
 class ProcessWorkerTest(unittest.TestCase):
-    def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False, descendant=False):
+    def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False, descendant=False, request_overrides=None):
         with tempfile.TemporaryDirectory(prefix="mcp-worker-") as directory:
             root = Path(directory)
             job = root / "job"
             job.mkdir(mode=0o700)
             request = {"job_id": "entry-test", "executable": sys.executable,
                        "args": ["-c", code, *arguments], "cwd": str(root), "timeout_ms": timeout}
+            if request_overrides:
+                request.update(request_overrides)
             (job / "request.json").write_text(json.dumps(request), encoding="utf-8")
             (job / "state.json").write_text(json.dumps({
                 "job_id": "entry-test", "state": "starting", "exit_code": None,
@@ -65,6 +67,29 @@ class ProcessWorkerTest(unittest.TestCase):
         self.assertFalse(result["state"]["success"])
         self.assertEqual(result["stdout"].decode("utf-8"), "中文 $(literal)")
         self.assertEqual(result["stderr"], b"error-stream")
+
+    def test_empty_environment_and_removal_reach_the_real_worker(self):
+        result = self.run_worker(
+            "import os; print(repr(os.environ.get('MCP_EMPTY_VALUE'))); print('PATH' in os.environ)",
+            request_overrides={"env": [{"name": "MCP_EMPTY_VALUE", "value": ""}], "unset_env": ["PATH"]})
+        self.assertTrue(result["state"]["success"], result)
+        self.assertEqual(result["stdout"].splitlines(), [b"''", b"False"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows explicit shell grammar")
+    def test_windows_shells_preserve_quoted_paths_and_scripts(self):
+        with tempfile.TemporaryDirectory(prefix="mcp shell space ") as directory:
+            script = Path(directory) / "build environment.cmd"
+            script.write_text("@echo off\necho quoted-path-ok\nexit /b 0\n", encoding="ascii")
+            result = self.run_worker("", request_overrides={
+                "executable": os.environ.get("COMSPEC", "cmd.exe"), "shell": "cmd",
+                "args": ['call "%s"' % script]})
+            self.assertTrue(result["state"]["success"], result)
+            self.assertIn(b"quoted-path-ok", result["stdout"])
+        result = self.run_worker("", request_overrides={
+            "executable": "powershell.exe", "shell": "powershell",
+            "args": ["Write-Output 'space and \"literal quote\"'; exit 7"]})
+        self.assertEqual(result["state"]["exit_code"], 7, result)
+        self.assertIn(b'space and "literal quote"', result["stdout"])
 
     def test_cancel_running_command(self):
         result = self.run_worker(

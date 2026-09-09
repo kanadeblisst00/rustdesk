@@ -1,10 +1,12 @@
 mod environment;
+mod output;
 mod platform;
 mod store;
 #[cfg(test)]
 mod tests;
 mod worker;
 mod workspace;
+mod workspace_files;
 
 use super::*;
 use hbb_common::{message_proto::Message, protobuf::UnknownValueRef};
