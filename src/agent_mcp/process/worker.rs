@@ -112,11 +112,18 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(args) = spec["args"].as_array() {
+    if matches!(spec["shell"].as_str(), Some("cmd" | "powershell")) {
+        #[cfg(windows)]
+        platform::shell_arguments(&mut command, &spec)?;
+        #[cfg(not(windows))]
+        return Err("shell cmd/powershell requires a Windows peer".into());
+    } else if let Some(args) = spec["args"].as_array() {
         for arg in args {
             command.arg(arg.as_str().ok_or("Invalid argument")?);
         }
     }
+    #[cfg(windows)]
+    command.env("PATH", platform::process_path()?);
     if let Some(env) = spec["env"].as_array() {
         for entry in env {
             command.env(
@@ -125,7 +132,12 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
             );
         }
     }
-    let mut child = platform::Child::spawn(&mut command)?;
+    if let Some(names) = spec["unset_env"].as_array() {
+        for name in names {
+            command.env_remove(name.as_str().ok_or("Invalid environment name")?);
+        }
+    }
+    let mut child = platform::Child::spawn(&mut command).map_err(|error| format!("Start remote executable {} in cwd {}: {error}; verify the executable path, working directory and PATH with get_environment", spec["executable"], spec["cwd"]))?;
     let output = platform::Reader::new(child.process.stdout.take().ok_or("Missing stdout pipe")?)?;
     let errors = platform::Reader::new(child.process.stderr.take().ok_or("Missing stderr pipe")?)?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -158,13 +170,28 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
         }
     };
     let started = Instant::now();
-    let timeout = Duration::from_millis(spec["timeout_ms"].as_u64().unwrap_or(3_600_000));
+    let mut timeout = Duration::from_millis(spec["timeout_ms"].as_u64().unwrap_or(3_600_000));
+    state["timeout_ms"] = json!(timeout.as_millis() as u64);
+    state["timeout_policy"] = json!("terminate_process_tree");
     state["state"] = json!("running");
     state["started_at_ms"] = json!(store::now());
     state["pid"] = json!(child.process.id());
     let monitor = (|| {
         let mut heartbeat = Instant::now() - Duration::from_secs(2);
         loop {
+            if (heartbeat.elapsed() >= Duration::from_secs(1) || started.elapsed() >= timeout)
+                && dir.join("timeout.json").exists()
+            {
+                let update = store::read_json(&dir.join("timeout.json"))?;
+                let requested = update["timeout_ms"]
+                    .as_u64()
+                    .ok_or("Invalid timeout update")?;
+                if !(100..=86_400_000).contains(&requested) {
+                    return Err("Invalid timeout update".into());
+                }
+                timeout = timeout.max(Duration::from_millis(requested));
+                state["timeout_ms"] = json!(timeout.as_millis() as u64);
+            }
             if heartbeat.elapsed() >= Duration::from_secs(1) {
                 state["updated_at_ms"] = json!(store::now());
                 store::write_json(&dir.join("state.json"), state)?;

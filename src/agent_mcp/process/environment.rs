@@ -103,6 +103,14 @@ pub(super) fn observe(identity: &Identity, args: &Value) -> Result<Value, String
             "flutter", "dart", "dotnet", "clang", "gcc", "go", "java", "pwsh",
         ],
     };
+    #[cfg(windows)]
+    let names = if args["executables"].is_null() {
+        let mut names = names;
+        names.extend(["powershell", "cl", "link"]);
+        names
+    } else {
+        names
+    };
     let mut tools = Vec::new();
     for name in names {
         if name.is_empty()
@@ -118,6 +126,10 @@ pub(super) fn observe(identity: &Identity, args: &Value) -> Result<Value, String
         let resolved = resolve(name, &vars);
         tools.push(json!({"name":name,"found":resolved.is_some(),"path":resolved,"version_verified":false}));
     }
+    #[cfg(windows)]
+    let console = json!({"oem_code_page":unsafe { windows::Win32::Globalization::GetOEMCP() },"ansi_code_page":unsafe { windows::Win32::Globalization::GetACP() },"output_encoding":"producer-dependent; read_process_output supports explicit encoding"});
+    #[cfg(not(windows))]
+    let console = Value::Null;
     let visible: BTreeMap<_, _> = vars
         .iter()
         .filter(|(key, _)| {
@@ -139,7 +151,7 @@ pub(super) fn observe(identity: &Identity, args: &Value) -> Result<Value, String
         })
         .collect();
     Ok(
-        json!({"os":std::env::consts::OS,"process_arch":std::env::consts::ARCH,"logical_cpus":std::thread::available_parallelism().map(|n| n.get()).ok(),"user":user,"environment":visible,"job_storage_path":root,"disk":{"path":path,"space":space(&path)?},"executables":tools,"native_uia":cfg!(windows),"interactive_desktop_verified":false,"dependencies_modified":false,"package_checks_performed":false,"note":"Executable discovery checks PATH files, not versions or package imports. Use explicit run_process probes and provisioning commands. No dependencies were installed."}),
+        json!({"os":std::env::consts::OS,"process_arch":std::env::consts::ARCH,"logical_cpus":std::thread::available_parallelism().map(|n| n.get()).ok(),"user":user,"environment":visible,"console":console,"job_storage_path":root,"disk":{"path":path,"space":space(&path)?},"executables":tools,"native_uia":cfg!(windows),"interactive_desktop_verified":false,"dependencies_modified":false,"package_checks_performed":false,"note":"Executable discovery checks PATH files, not versions or package imports. Use explicit run_process probes and provisioning commands. No dependencies were installed."}),
     )
 }
 

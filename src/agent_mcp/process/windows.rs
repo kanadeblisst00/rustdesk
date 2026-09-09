@@ -46,6 +46,73 @@ fn wide(path: &OsStr) -> Vec<u16> {
     path.encode_wide().chain(Some(0)).collect()
 }
 
+fn system_directory() -> Result<PathBuf, String> {
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buffer = vec![0u16; 32768];
+    let size = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
+    if size == 0 || size >= buffer.len() {
+        return Err("Unable to locate the Windows system directory".into());
+    }
+    String::from_utf16(&buffer[..size])
+        .map(PathBuf::from)
+        .map_err(|e| e.to_string())
+}
+
+fn complete_path(path: &str, system: &Path) -> Result<String, String> {
+    let mut directories: Vec<_> = std::env::split_paths(path).collect();
+    for directory in [
+        system.to_owned(),
+        system.join("WindowsPowerShell").join("v1.0"),
+        system.join("Wbem"),
+    ] {
+        if !directories.iter().any(|p| {
+            p.to_string_lossy()
+                .eq_ignore_ascii_case(&directory.to_string_lossy())
+        }) {
+            directories.push(directory);
+        }
+    }
+    std::env::join_paths(directories)
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|_| "Windows PATH is not valid Unicode".into())
+}
+
+pub(in super::super) fn process_path() -> Result<String, String> {
+    let path = match std::env::var("PATH") {
+        Ok(path) => path,
+        Err(std::env::VarError::NotPresent) => String::new(),
+        Err(error) => return Err(format!("Read authorized user's PATH: {error}")),
+    };
+    complete_path(&path, &system_directory()?)
+}
+
+pub(in super::super) fn shell_arguments(
+    command: &mut std::process::Command,
+    spec: &serde_json::Value,
+) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let script = spec["args"][0].as_str().ok_or("Missing shell script")?;
+    if spec["shell"] == "cmd" {
+        // cmd's /S /C grammar is not the C-runtime argv grammar used by Command::arg.
+        command
+            .args(["/D", "/S", "/C"])
+            .raw_arg(format!("\"{script}\""));
+    } else {
+        use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        command
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+            ])
+            .arg(STANDARD.encode(bytes));
+    }
+    Ok(())
+}
+
 pub(in super::super) fn replace(from: &Path, to: &Path) -> Result<(), String> {
     unsafe {
         MoveFileExW(
@@ -71,7 +138,7 @@ impl Identity {
         String,
     > {
         if self.token.is_none() {
-            let vars: std::collections::BTreeMap<String, String> = std::env::vars_os()
+            let mut vars: std::collections::BTreeMap<String, String> = std::env::vars_os()
                 .filter_map(|(key, value)| {
                     Some((
                         key.into_string().ok()?.to_ascii_uppercase(),
@@ -79,6 +146,7 @@ impl Identity {
                     ))
                 })
                 .collect();
+            vars.insert("PATH".into(), process_path()?);
             let user = serde_json::json!({"name":vars.get("USERNAME"),"domain":vars.get("USERDOMAIN"),"identity_source":"authorized terminal process"});
             return Ok((vars, user));
         }
@@ -109,6 +177,11 @@ impl Identity {
                 }
                 offset += 1;
             }
+            let path = complete_path(
+                vars.get("PATH").map(String::as_str).unwrap_or(""),
+                &system_directory()?,
+            )?;
+            vars.insert("PATH".into(), path);
             let user = serde_json::json!({"name":vars.get("USERNAME"),"domain":vars.get("USERDOMAIN"),"identity_source":if self.token.is_some(){"authorized terminal logon token"}else{"authorized terminal process"}});
             Ok((vars, user))
         })();

@@ -81,6 +81,8 @@ pub(super) struct Store {
     pub root: PathBuf,
 }
 
+static TIMEOUT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl Store {
     pub fn new(root: PathBuf) -> Result<Self, String> {
         private_dir(&root)?;
@@ -121,6 +123,21 @@ impl Store {
                 Err(e) => return Err(e.to_string()),
             };
             state[format!("{stream}_bytes")] = json!(size);
+        }
+        state["log_paths"] =
+            json!({"stdout":dir.join("stdout.log"),"stderr":dir.join("stderr.log")});
+        state["poll_after_ms"] = json!(if terminal(&state) { 0 } else { 1000 });
+        if let Some(started) = state["started_at_ms"].as_u64() {
+            let end = state["finished_at_ms"].as_u64().unwrap_or_else(now);
+            let elapsed = end.saturating_sub(started);
+            state["elapsed_ms"] = json!(elapsed);
+            if let Some(timeout) = state["timeout_ms"].as_u64() {
+                state["remaining_timeout_ms"] = json!(if terminal(&state) {
+                    0
+                } else {
+                    timeout.saturating_sub(elapsed)
+                });
+            }
         }
         Ok(state)
     }
@@ -183,6 +200,8 @@ impl Store {
             .map_err(|e| format!("Claim job_id: {e}; query the ID before retrying"))?;
         write_json(&dir.join("request.json"), &spec)?;
         let mut state = json!({"job_id":id,"state":"starting","created_at_ms":now(),"updated_at_ms":now(),"exit_code":null,"success":null});
+        state["timeout_ms"] = json!(arguments["timeout_ms"].as_u64().unwrap_or(3_600_000));
+        state["timeout_policy"] = json!("terminate_process_tree");
         write_json(&dir.join("state.json"), &state)?;
         if let Err(error) = launch(&dir) {
             state["state"] = json!("failed");
@@ -191,7 +210,7 @@ impl Store {
             state["finished_at_ms"] = json!(now());
             write_json(&dir.join("state.json"), &state)?;
         }
-        Ok(state)
+        self.status(id)
     }
 
     pub fn call(&self, operation: &str, args: &Value) -> Result<Value, String> {
@@ -203,6 +222,34 @@ impl Store {
         let state = self.status(id)?;
         match operation {
             "get_process_status" => Ok(state),
+            "extend_process_timeout" => {
+                let _lock = TIMEOUT_LOCK.lock().unwrap();
+                let state = self.status(id)?;
+                if !matches!(state["state"].as_str(), Some("starting" | "running")) {
+                    return Err("Only starting/running jobs can be extended; a timed_out job has already been terminated".into());
+                }
+                let requested = args["timeout_ms"].as_u64().ok_or("Missing timeout_ms")?;
+                let previous = if dir.join("timeout.json").exists() {
+                    read_json(&dir.join("timeout.json"))?["timeout_ms"]
+                        .as_u64()
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                if !(100..=86_400_000).contains(&requested)
+                    || requested < previous.max(state["timeout_ms"].as_u64().unwrap_or(3_600_000))
+                {
+                    return Err("Timeout extension cannot shorten the current/requested timeout and must be at most 24 hours".into());
+                }
+                write_json(&dir.join("timeout.json"), &json!({"timeout_ms":requested}))?;
+                let current = self.status(id)?;
+                let applied = current["timeout_ms"]
+                    .as_u64()
+                    .is_some_and(|effective| effective >= requested);
+                Ok(
+                    json!({"job":current,"requested_timeout_ms":requested,"applied":applied,"note":"Query timeout_ms to confirm the worker applied the extension; a job may finish before the request is observed"}),
+                )
+            }
             "cancel_process" => {
                 if !terminal(&state) {
                     write_json(&dir.join("cancel.json"), &json!({"requested_at_ms":now()}))?;
@@ -221,7 +268,7 @@ impl Store {
                 if !matches!(stream, "stdout" | "stderr") {
                     return Err("Invalid stream".into());
                 }
-                let offset = args["offset"].as_u64().unwrap_or(0);
+                let mut offset = args["offset"].as_u64().unwrap_or(0);
                 let size = args["max_bytes"].as_u64().unwrap_or(65536).clamp(1, 65536);
                 let mut file = match File::open(dir.join(format!("{stream}.log"))) {
                     Ok(file) => Some(file),
@@ -235,6 +282,13 @@ impl Store {
                 };
                 let mut data = Vec::new();
                 if let Some(file) = file.as_mut() {
+                    if args["tail_lines"].is_u64() {
+                        offset = file
+                            .metadata()
+                            .map_err(|e| e.to_string())?
+                            .len()
+                            .saturating_sub(size);
+                    }
                     if offset > file.metadata().map_err(|e| e.to_string())?.len() {
                         return Err("Offset is beyond current output".into());
                     }
@@ -246,10 +300,30 @@ impl Store {
                 } else if offset != 0 {
                     return Err("Offset is beyond current output".into());
                 }
+                let mut truncated_start = false;
+                if let Some(lines) = args["tail_lines"].as_u64() {
+                    let end = data
+                        .len()
+                        .saturating_sub(usize::from(data.ends_with(b"\n")));
+                    let start = data[..end]
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .filter(|(_, byte)| **byte == b'\n')
+                        .nth(lines.saturating_sub(1) as usize)
+                        .map(|(index, _)| index + 1)
+                        .unwrap_or(0);
+                    truncated_start = offset > 0 && start == 0;
+                    data.drain(..start);
+                    offset += start as u64;
+                }
                 let next = offset + data.len() as u64;
-                Ok(
-                    json!({"job_id":id,"stream":stream,"offset":offset,"next_offset":next,"data_base64":STANDARD.encode(&data),"text":String::from_utf8_lossy(&data),"complete":terminal(&state),"eof":terminal(&state) && next >= state[format!("{stream}_bytes")].as_u64().unwrap_or(0)}),
-                )
+                let mut result =
+                    super::output::decode(&data, args["encoding"].as_str().unwrap_or("auto"));
+                result["truncated_start"] = json!(truncated_start);
+                let fields = result.as_object_mut().ok_or("Invalid output metadata")?;
+                fields.extend(json!({"job_id":id,"stream":stream,"offset":offset,"next_offset":next,"data_base64":STANDARD.encode(&data),"complete":terminal(&state),"eof":terminal(&state) && next >= state[format!("{stream}_bytes")].as_u64().unwrap_or(0)}).as_object().ok_or("Invalid log metadata")?.clone());
+                Ok(result)
             }
             _ => Err("Unknown process operation".into()),
         }
