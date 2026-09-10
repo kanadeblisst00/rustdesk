@@ -208,6 +208,8 @@ impl Store {
         let mut state = json!({"job_id":id,"state":"starting","created_at_ms":now(),"updated_at_ms":now(),"exit_code":null,"success":null});
         state["timeout_ms"] = json!(arguments["timeout_ms"].as_u64().unwrap_or(3_600_000));
         state["timeout_policy"] = json!("terminate_process_tree");
+        state["log_limit_policy"] = json!(arguments["log_limit_policy"].as_str().unwrap_or("truncate"));
+        state["logs_truncated"] = json!(false);
         write_json(&dir.join("state.json"), &state)?;
         if let Err(error) = launch(&dir) {
             state["state"] = json!("failed");
