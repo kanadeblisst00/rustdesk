@@ -86,7 +86,8 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
         state["success"] = json!(false);
     }
     if let Err(e) = super::workspace::finish(dir, &mut state) {
-        state["source_unchanged"] = json!(false);
+        state["source_unchanged"] = serde_json::Value::Null;
+        state["source_verification"] = json!({"state":"error","error":e});
         state["workspace_error"] = json!(e);
     }
     state["updated_at_ms"] = json!(store::now());

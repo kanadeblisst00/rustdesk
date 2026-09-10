@@ -13,6 +13,9 @@ pub fn tools() -> Vec<Value> {
         ("remove_workspace", "Delete a workspace and its source/build/artifact/report files. Refuses active/unknown workspace leases. Download artifacts first; retained job logs remain.", false, json!({"workspace_id":id}), vec!["workspace_id"]),
     ] {
         let mut props = properties.as_object().cloned().unwrap_or_default();
+        if name == "seal_workspace" {
+            props.insert("source_excludes".into(), json!({"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":4096},"description":"Explicit source-relative files or directory subtrees excluded from fingerprinting, e.g. [\"dist\",\".cache\"]. No wildcards/trailing slash. Saved in the seal and reused before/after jobs. Omit to retain the previous rules; [] resets them. Excluded content has no source integrity guarantee. Prefer build/ for generated outputs."}));
+        }
         props.insert("session".into(), json!({"type":"string","minLength":1,"maxLength":36}));
         let mut required = required;
         required.push("session");

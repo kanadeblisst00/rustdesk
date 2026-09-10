@@ -249,6 +249,26 @@ class MatrixTest(unittest.TestCase):
             self.run_matrix([changed])
         self.assertEqual(len(self.fake.calls), calls)
 
+    def test_exclusions_are_sent_at_seal_and_validation_failure_keeps_success(self):
+        item = target()
+        item["source_excludes"] = ["dist", ".cache"]
+        self.assertTrue(self.run_matrix([item])["success"])
+        seal = [args for name, args in self.fake.calls if name == "seal_workspace"][0]
+        self.assertEqual(seal["source_excludes"], ["dist", ".cache"])
+        build = next(job for job in self.fake.jobs.values() if job["request"]["executable"] == "cmake")
+        build["state"].update(source_unchanged=None, workspace_error="Source manifest exceeds 4096 entries",
+                              source_verification={"state": "error"})
+        result = self.run_matrix([item])
+        report = result["targets"][0]
+        self.assertFalse(result["success"])
+        self.assertTrue(report["steps"]["build-0"]["success"])
+        self.assertEqual(report["steps"]["build-0"]["source_verification"]["state"], "error")
+        self.assertIn("command succeeded; workspace verification could not complete", report["error"])
+        for path in ["../dist", "dist/", "dist/*", "", "C:dist"]:
+            item["source_excludes"] = [path]
+            with self.assertRaises(matrix.MatrixError):
+                matrix.validate({"version": 1, "targets": [item]})
+
     def test_paths_unknown_keys_and_implicit_empty_test_stage_are_rejected(self):
         for path in ("../secret", "/tmp/file", "reports/../../secret", "reports/x\\y", "reports/C:file", "reports//file"):
             item = target()

@@ -85,7 +85,7 @@ def validate(manifest):
     names, devices = set(), set()
     for target in targets:
         fields(target, ("name", "device_id", "source_revision", "git", "auth", "executables",
-                        "artifacts", "screenshot_on_failure", *STAGES),
+                        "artifacts", "source_excludes", "screenshot_on_failure", *STAGES),
                ("name", "device_id", "source_revision", "prepare", "build", "test"))
         if not valid_id(target["name"]):
             raise MatrixError("Target names must be safe IDs of at most 64 characters")
@@ -111,6 +111,13 @@ def validate(manifest):
             raise MatrixError("Invalid executable discovery list")
         if not isinstance(target.get("screenshot_on_failure", False), bool):
             raise MatrixError("screenshot_on_failure must be boolean")
+        excludes = target.get("source_excludes", [])
+        if (not isinstance(excludes, list) or len(excludes) > 64
+                or any(not isinstance(path, str) or len(path) > 4096
+                       or any(p in ("", ".", "..") or p.endswith((".", " "))
+                              or any(c in p for c in "\\:\0*?") for p in path.split("/"))
+                       for path in excludes)):
+            raise MatrixError("source_excludes must be normal source-relative paths without wildcards")
         paths = target.get("artifacts", [])
         if not isinstance(paths, list) or len(paths) > 64 or len(set(map(str, paths))) != len(paths):
             raise MatrixError("Expected at most 64 unique artifact paths")
@@ -294,7 +301,7 @@ class TargetRun:
         deadline = time.monotonic() + args["timeout_ms"] / 1000 + 60
         while True:
             entry.update({key: state.get(key) for key in
-                          ("state", "exit_code", "success", "source_unchanged", "logs_truncated")})
+                          ("state", "exit_code", "success", "source_unchanged", "source_verification", "workspace_error", "logs_truncated")})
             self.persist()
             self.check_stop()
             terminal = state["state"] in FINAL
@@ -303,7 +310,9 @@ class TargetRun:
                 if state["state"] != "exited" or state.get("success") is not True:
                     raise MatrixError(label + ": command did not succeed; see retained stdout/stderr")
                 if workspace and state.get("source_unchanged") is not True:
-                    raise MatrixError(label + ": source integrity was not preserved")
+                    if (state.get("source_verification") or {}).get("state") == "error" or state.get("workspace_error"):
+                        raise MatrixError(label + ": command succeeded; workspace verification could not complete (see source_verification/workspace_error)")
+                    raise MatrixError(label + ": command succeeded; source integrity was not preserved")
                 return job
             if state["state"] == "unknown" or time.monotonic() >= deadline:
                 raise MatrixError(label + ": outcome unknown; inspect/resume the same job ID")
@@ -402,7 +411,8 @@ class TargetRun:
                 raise MatrixError("Checked-out Git commit differs from source_revision")
             self.report["git_head_matched_at_prepare"] = True
             if not info.get("source"):
-                info = self.data("seal_workspace", workspace_id=self.workspace)
+                options = {"source_excludes": self.target["source_excludes"]} if "source_excludes" in self.target else {}
+                info = self.data("seal_workspace", workspace_id=self.workspace, **options)
             self.report["source"] = info["source"]
             self.persist()
             for stage in STAGES[3:]:

@@ -64,6 +64,10 @@ Windows 进程树在暂停状态加入 Job Object 后才恢复执行；用户令
 
 `seal_workspace` 可以在空闲工作区重复调用。若构建生成 `source/resources_rc.py` 等文件，先核对变化，再重新封存并以新 `job_id` 重跑；既有 job 不会因重封存而执行第二次。建议把生成文件放在 `build/`。不能自动忽略所有新增文件或自动接受源码修改；普通 `run_process` 无需封存，适合准备与临时诊断命令。
 
+必须在源码目录内生成产物时，可在封存时明确指定 `source_excludes:["dist",".cache"]`。路径相对于 `source/`，匹配一个文件或整个目录子树，不支持通配符或末尾 `/`；最多 64 条。规则参与快照身份并随 job 保存，启动前和结束后使用相同规则。重复封存省略该参数会沿用原规则，传 `[]` 清空额外规则；默认排除的 `.git`、`__pycache__`、`.pytest_cache` 保留。排除内容不再受源码完整性检查，不能把实际源码目录随意排除。构建矩阵 target 同样接受 `source_excludes`。
+
+命令结果与源码复核分别报告：`state/exit_code/success` 表示执行结果，`source_verification.state` 为 `passed`、`changed` 或 `error`。超过 4096 条目、字节/时间预算或读取失败属于 `error`，此时 `source_unchanged:null`，不会伪称源码已经变化，也不会改变命令的成功结果。构建矩阵仍要求源码复核通过才能继续，但报告明确区分“命令失败”与“命令成功、复核未完成”，保留具体复核错误和已生成产物。旧 seal 未配置额外排除时保留原有指纹算法。
+
 Windows shell 示例（可执行文件路径需按目标实际安装核对）：
 
 ```json
