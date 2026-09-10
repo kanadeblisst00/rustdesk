@@ -257,6 +257,100 @@ fn timeout_extension_is_durable_and_does_not_resume_completed_jobs() {
 }
 
 #[test]
+fn workspace_replacement_preserves_old_content_until_verified_and_keeps_backup() {
+    use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+    use sha2::{Digest, Sha256};
+    let temp = Temp::new();
+    let store = temp.store();
+    let args = json!({"workspace_id":"replace","source_revision":"test"});
+    let created = workspace::call(&store, "create_workspace", &args, |_| panic!()).unwrap();
+    let root = PathBuf::from(created["paths"]["root"].as_str().unwrap());
+    let path = root.join("source/input.bin");
+    std::fs::write(&path, b"original").unwrap();
+    let old_hash = format!("{:x}", Sha256::digest(b"original"));
+    let data = vec![42; 20000];
+    let mut upload = json!({"session":"s","workspace_id":"replace","path":"source/input.bin","offset":0,
+        "total_bytes":data.len(),"sha256":format!("{:x}",Sha256::digest(&data)),"data_base64":STANDARD.encode(&data[..16384]),
+        "replace":{"expected_sha256":old_hash}});
+    model::validate("write_workspace_file", &upload).unwrap();
+    let first = workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap();
+    assert_eq!(first["complete"], false);
+    assert_eq!(std::fs::read(&path).unwrap(), b"original");
+    assert_eq!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap(), first);
+    upload["offset"] = json!(16384);
+    upload["data_base64"] = json!(STANDARD.encode(&data[16384..]));
+    std::fs::write(&path, b"external change").unwrap();
+    assert!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap_err().contains("checksum conflict"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"external change");
+    std::fs::write(&path, b"original").unwrap();
+    let completed = workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap();
+    assert_eq!(completed["complete"], true);
+    assert_eq!(std::fs::read(&path).unwrap(), data);
+    let backup = root.join(completed["replacement"]["backup_path"].as_str().unwrap());
+    assert_eq!(std::fs::read(&backup).unwrap(), b"original");
+    assert_eq!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap(), completed);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(backup).unwrap();
+}
+
+#[test]
+fn workspace_replacement_rejects_stale_checksums_and_conflicting_uploads() {
+    use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+    use sha2::{Digest, Sha256};
+    let temp = Temp::new();
+    let store = temp.store();
+    let created = workspace::call(&store, "create_workspace", &json!({"workspace_id":"replace","source_revision":"test"}), |_| panic!()).unwrap();
+    let root = PathBuf::from(created["paths"]["root"].as_str().unwrap());
+    let path = root.join("source/input.bin");
+    std::fs::write(&path, b"old").unwrap();
+    let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    let mut upload = json!({"workspace_id":"replace","path":"source/input.bin","offset":0,
+        "total_bytes":3,"sha256":hash(b"new"),"data_base64":STANDARD.encode(b"ne"),
+        "replace":{"expected_sha256":hash(b"stale")}});
+    assert!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap_err().contains("checksum conflict"));
+    upload["replace"]["expected_sha256"] = json!(hash(b"old"));
+    workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap();
+    std::fs::write(&path, b"changed").unwrap();
+    upload["replace"]["expected_sha256"] = json!(hash(b"changed"));
+    assert!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap_err().contains("parameters conflict"));
+    std::fs::write(&path, b"old").unwrap();
+    upload["replace"]["expected_sha256"] = json!(hash(b"old"));
+    upload["offset"] = json!(2);
+    upload["data_base64"] = json!(STANDARD.encode(b"x"));
+    assert!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap_err().contains("SHA-256 mismatch"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"old");
+    upload["path"] = json!("source/missing.bin");
+    assert!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap_err().contains("existing file"));
+}
+
+#[test]
+fn workspace_replacement_never_overwrites_a_conflicting_backup() {
+    use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+    use sha2::{Digest, Sha256};
+    let temp = Temp::new();
+    let store = temp.store();
+    let created = workspace::call(&store, "create_workspace", &json!({"workspace_id":"replace","source_revision":"test"}), |_| panic!()).unwrap();
+    let root = PathBuf::from(created["paths"]["root"].as_str().unwrap());
+    let old_hash = format!("{:x}", Sha256::digest(b"old"));
+    let relative = "source/input.bin";
+    let path = root.join(relative);
+    std::fs::write(&path, b"old").unwrap();
+    let backup = root.join(format!("reports/.mcp-backups/{:x}/{old_hash}.bak", Sha256::digest(relative.as_bytes())));
+    std::fs::create_dir_all(backup.parent().unwrap()).unwrap();
+    std::fs::write(&backup, b"unrelated backup").unwrap();
+    let upload = json!({"workspace_id":"replace","path":relative,"offset":0,"total_bytes":0,
+        "sha256":format!("{:x}",Sha256::digest(b"")),"data_base64":STANDARD.encode(b""),
+        "replace":{"expected_sha256":old_hash}});
+    assert!(workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap_err().contains("backup checksum conflict"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"old");
+    assert_eq!(std::fs::read(&backup).unwrap(), b"unrelated backup");
+    std::fs::remove_file(&backup).unwrap();
+    workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"");
+    assert_eq!(std::fs::read(&backup).unwrap(), b"old");
+}
+
+#[test]
 fn workspace_bytes_upload_resume_checksum_download_and_reseal() {
     use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
     use sha2::{Digest, Sha256};

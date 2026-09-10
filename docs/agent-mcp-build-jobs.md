@@ -62,9 +62,11 @@ Windows 进程树在暂停状态加入 Job Object 后才恢复执行；用户令
 
 清单只允许关联工作区最后一个任务，防止后续构建覆盖文件后仍冒用旧任务 ID。它证明采集时的文件内容，不证明每个文件都由该命令生成；`command_success`、`source_unchanged_after_job`、`revision_verified` 分开报告。源码在命令运行中被修改、产物在采集后被改写，都需要调用方处理。工作区锁只协调 `run_workspace_process`，不会阻止用户或其他文件/终端工具写入；不是文件系统沙箱。
 
-`write_workspace_file` 接受 `workspace_id`、`path`（如 `source/project.tar.gz`）、`offset`、`total_bytes`、整文件 `sha256` 和 `data_base64`。每片最多 16 KiB 原始字节，编码后最多 21848 字符；文件最多 512 MiB。顺序发送，按 `next_offset` 续传，同一片原样重试不会重复写入。最终校验通过才发布文件，已有不同内容不会被覆盖；哈希不符时删除临时上传并从 0 重传。同一工作区最多 64 个未完成上传；删除工作区会一起清理临时上传。路径拒绝穿越和链接，父目录按需创建。目标文件系统须支持硬链接，以保证发布时不覆盖并发创建的目标；不支持时明确报错。
+`write_workspace_file` 接受 `workspace_id`、`path`（如 `source/project.tar.gz`）、`offset`、`total_bytes`、整文件 `sha256` 和 `data_base64`。每片最多 16 KiB 原始字节，编码后最多 21848 字符；文件最多 512 MiB。顺序发送，按 `next_offset` 续传，同一片原样重试不会重复写入。最终校验通过才发布文件，默认不会覆盖已有不同内容；哈希不符时删除临时上传并从 0 重传。同一工作区最多 64 个未完成上传；删除工作区会一起清理临时上传。路径拒绝穿越和链接，父目录按需创建。目标文件系统须支持硬链接，以保证发布时不覆盖并发创建的目标；不支持时明确报错。
 
 `read_workspace_file` 接受 `workspace_id`、`path`、`offset`、`max_bytes`（最多 16384），返回原始 base64、`chunk_sha256`、`next_offset`、`eof`。两种工具都要求工作区没有活动/未知租约，沿用终端用户的原有权限，无需新增文件会话。下载产物时先保存 `get_artifact_manifest` 的整文件 SHA-256，拼接全部字节后核对，不能仅凭每片校验判断文件在整个下载期间未变化。
+
+替换已有文件时，给 `write_workspace_file` 的每一片都附加 `replace:{"expected_sha256":"旧文件的64位十六进制SHA-256"}`；先读取并拼接旧文件计算整文件哈希，不能把某一分片的 `chunk_sha256` 当作整文件哈希。未传 `replace` 时仍拒绝隐式覆盖。文件不匹配、备份冲突或上传内容校验失败均不会覆盖原文件；途中不能更改替换参数。完整新文件校验通过后，自动复制并校验旧文件到 `reports/.mcp-backups/`，再次核对旧文件，然后原子替换。返回 `replacement.backup_path`、`backup_remote_path`、`backup_sha256`，可用工作区读取接口下载备份；源文件替换后须重新 seal。成功请求可以原样重试，重试会校验保留备份。无关外部命令/人类写入不受 MCP 租约控制，校验与替换之间不是操作系统级 compare-and-swap，应先停止外部写入。备份随工作区删除，下载后再清理。
 
 `seal_workspace` 可以在空闲工作区重复调用。若构建生成 `source/resources_rc.py` 等文件，先核对变化，再重新封存并以新 `job_id` 重跑；既有 job 不会因重封存而执行第二次。建议把生成文件放在 `build/`。不能自动忽略所有新增文件或自动接受源码修改；普通 `run_process` 无需封存，适合准备与临时诊断命令。
 
