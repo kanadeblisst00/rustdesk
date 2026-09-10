@@ -594,3 +594,70 @@ fn failed_post_build_scan_preserves_command_success_and_releases_workspace() {
     let workspace = workspace::call(&store, "get_workspace", &request, |_| panic!()).unwrap();
     assert!(workspace["lease"].is_null());
 }
+
+#[test]
+fn process_wait_reports_timeout_incremental_output_phase_and_stale_worker() {
+    let temp = Temp::new();
+    let store = temp.store();
+    store.create(&spec("wait"), |_| Ok(())).unwrap();
+    let args = json!({"job_id":"wait","timeout_ms":0,"max_bytes":3});
+    let first = store.call("wait_for_process", &args).unwrap();
+    assert_eq!(first["event"], "timeout");
+    assert_eq!(first["job"]["state"], "starting");
+    let dir = store.directory("wait").unwrap();
+    std::fs::write(dir.join("stdout.log"), b"abcdef").unwrap();
+    let output = store.call("wait_for_process", &args).unwrap();
+    assert_eq!(output["event"], "output");
+    assert_eq!(output["output"]["stdout"]["text"], "abc");
+    assert_eq!(output["output"]["stdout"]["next_offset"], 3);
+    let mut args = args;
+    args["stdout_offset"] = json!(3);
+    assert_eq!(
+        store.call("wait_for_process", &args).unwrap()["output"]["stdout"]["text"],
+        "def"
+    );
+    args["stdout_offset"] = json!(6);
+    let mut state = store::read_json(&dir.join("state.json")).unwrap();
+    state["phase"] = json!("environment_setup");
+    store::write_json(&dir.join("state.json"), &state).unwrap();
+    args["after_phase"] = json!("command");
+    assert_eq!(
+        store.call("wait_for_process", &args).unwrap()["event"],
+        "phase_changed"
+    );
+    state["updated_at_ms"] = json!(0);
+    store::write_json(&dir.join("state.json"), &state).unwrap();
+    let unknown = store.call("wait_for_process", &args).unwrap();
+    assert_eq!(unknown["event"], "unknown");
+    assert_eq!(unknown["job"]["last_known_state"], "starting");
+    assert!(unknown["job"]["heartbeat_age_ms"].as_u64().unwrap() > 30000);
+}
+
+#[test]
+#[cfg(unix)]
+fn process_wait_observes_completion_after_store_recreation() {
+    let temp = Temp::new();
+    let store = temp.store();
+    store
+        .create(&shell_spec("wait", "sleep 0.15; printf complete"), |_| {
+            Ok(())
+        })
+        .unwrap();
+    let dir = store.directory("wait").unwrap();
+    let running = std::thread::spawn(move || worker::run(&dir));
+    let restored = temp.store();
+    let start = Instant::now();
+    let mut args = json!({"job_id":"wait","timeout_ms":1000});
+    loop {
+        let result = restored.call("wait_for_process", &args).unwrap();
+        args["after_state"] = result["job"]["state"].clone();
+        args["stdout_offset"] = result["output"]["stdout"]["next_offset"].clone();
+        if result["event"] == "completed" {
+            assert_eq!(result["job"]["success"], true);
+            assert_eq!(args["stdout_offset"], 8);
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+    running.join().unwrap().unwrap();
+}

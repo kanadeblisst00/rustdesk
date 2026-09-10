@@ -62,11 +62,13 @@ class Proxy:
         timeout = 70
         if isinstance(message, dict) and message.get("method") == "tools/call":
             params = message.get("params", {})
-            if isinstance(params, dict) and params.get("name") == "connect_device":
+            if isinstance(params, dict) and params.get("name") in ("connect_device", "recover_processes"):
                 arguments = params.get("arguments", {})
                 requested = arguments.get("timeout_ms", 12000) if isinstance(arguments, dict) else 12000
                 if isinstance(requested, (int, float)) and not isinstance(requested, bool):
-                    timeout = max(timeout, min(120000, max(0, requested)) / 1000 + 35)
+                    allowance = 65 if params.get("name") == "recover_processes" else 35
+                    maximum = 30000 if params.get("name") == "recover_processes" else 120000
+                    timeout = max(timeout, min(maximum, max(0, requested)) / 1000 + allowance)
         connection = http.client.HTTPConnection(self.host, self.port, timeout=timeout)
         try:
             connection.request("POST", "/mcp", body=payload, headers={

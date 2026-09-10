@@ -110,6 +110,9 @@ impl Store {
     pub fn status(&self, id: &str) -> Result<Value, String> {
         let dir = self.directory(id)?;
         let mut state = read_json(&dir.join("state.json"))?;
+        state["last_known_state"] = state["state"].clone();
+        state["observed_at_ms"] = json!(now());
+        state["heartbeat_age_ms"] = json!(now().saturating_sub(state["updated_at_ms"].as_u64().unwrap_or(0)));
         if !terminal(&state)
             && now().saturating_sub(state["updated_at_ms"].as_u64().unwrap_or(0)) > 30_000
         {
@@ -219,6 +222,9 @@ impl Store {
     pub fn call(&self, operation: &str, args: &Value) -> Result<Value, String> {
         if operation == "list_processes" {
             return self.list();
+        }
+        if operation == "wait_for_process" {
+            return super::wait::call(self, args);
         }
         let id = args["job_id"].as_str().ok_or("Missing job_id")?;
         let dir = self.directory(id)?;

@@ -156,7 +156,7 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
     }
     assert_eq!(backend.calls.load(Ordering::Relaxed), 0);
     let tools = catalog::tools();
-    assert_eq!(tools.len(), 60);
+    assert_eq!(tools.len(), 62);
     for tool in tools
         .iter()
         .filter(|t| rustdesk_agent_mcp::automation::is_tool(t["name"].as_str().unwrap()))
@@ -167,6 +167,41 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
         );
         assert_eq!(tool["annotations"]["readOnlyHint"], !write);
         assert_eq!(tool["annotations"]["destructiveHint"], write);
+    }
+}
+
+#[test]
+fn durable_recovery_and_wait_schemas_are_bounded() {
+    use rustdesk_agent_mcp::process::validate;
+    validate(
+        "recover_processes",
+        &json!({"device_id":"device","job_id":"original","reconnect":false}),
+    )
+    .unwrap();
+    validate(
+        "wait_for_process",
+        &json!({"session":"s","job_id":"original","timeout_ms":10000,"setup_offset":123}),
+    )
+    .unwrap();
+    for (tool, args) in [
+        (
+            "recover_processes",
+            json!({"device_id":"device","job_id":"../escape"}),
+        ),
+        (
+            "recover_processes",
+            json!({"device_id":"device","password":"secret"}),
+        ),
+        (
+            "wait_for_process",
+            json!({"session":"s","job_id":"original","timeout_ms":10001}),
+        ),
+        (
+            "wait_for_process",
+            json!({"session":"s","job_id":"original","stdout_offset":-1}),
+        ),
+    ] {
+        assert!(validate(tool, &args).is_err());
     }
 }
 
