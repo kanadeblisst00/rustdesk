@@ -97,6 +97,48 @@ class ProcessWorkerTest(unittest.TestCase):
             cancel=True)
         self.assertEqual(result["state"]["state"], "cancelled")
 
+    def test_log_truncation_preserves_exit_code_and_drains_both_pipes(self):
+        for code in (0, 7):
+            result = self.run_worker(
+                "import sys; sys.stdout.buffer.write(b'x' * 1048576); "
+                "sys.stderr.buffer.write(b'y' * 1048576); sys.exit(%d)" % code,
+                request_overrides={"max_log_bytes": 1024})
+            self.assertEqual(result["state"]["state"], "exited", result)
+            self.assertEqual(result["state"]["exit_code"], code)
+            self.assertEqual(result["state"]["success"], code == 0)
+            self.assertTrue(result["state"]["logs_truncated"])
+            self.assertEqual(result["stdout"], b'x' * 1024)
+            self.assertEqual(result["stderr"], b'y' * 1024)
+
+    def test_explicit_log_limit_terminates_tree(self):
+        child = ("import time,pathlib; pathlib.Path('started').write_text('ready'); "
+                 "time.sleep(2); pathlib.Path('leaked').write_text('bad')")
+        result = self.run_worker(
+            "import subprocess,sys,time,pathlib; subprocess.Popen([sys.executable,'-c',%r]); "
+            "\nwhile not pathlib.Path('started').exists(): time.sleep(0.02)\n"
+            "while True: sys.stdout.buffer.write(b'x' * 65536); sys.stdout.flush()" % child,
+            descendant=True, request_overrides={"max_log_bytes": 1024, "log_limit_policy": "terminate"})
+        self.assertEqual(result["state"]["state"], "log_limit", result)
+        self.assertTrue(result["state"]["logs_truncated"])
+        self.assertFalse(result["state"]["success"])
+
+    def test_truncated_output_does_not_disable_timeout(self):
+        result = self.run_worker(
+            "import sys,time; sys.stdout.buffer.write(b'x' * 65536); sys.stdout.flush(); time.sleep(60)",
+            timeout=1000, request_overrides={"max_log_bytes": 1024})
+        self.assertEqual(result["state"]["state"], "timed_out", result)
+        self.assertTrue(result["state"]["logs_truncated"])
+
+    def test_failed_parent_also_cleans_up_grandchild(self):
+        child = ("import time,pathlib; pathlib.Path('started').write_text('ready'); "
+                 "time.sleep(2); pathlib.Path('leaked').write_text('bad')")
+        result = self.run_worker(
+            "import subprocess,sys,time,pathlib; subprocess.Popen([sys.executable,'-c',%r]); "
+            "\nwhile not pathlib.Path('started').exists(): time.sleep(0.02)\n"
+            "sys.exit(7)" % child, descendant=True)
+        self.assertEqual(result["state"]["state"], "exited", result)
+        self.assertEqual(result["state"]["exit_code"], 7)
+
     @unittest.skipUnless(sys.platform == "win32", "Windows environment script")
     def test_environment_script_and_direct_argv(self):
         with tempfile.TemporaryDirectory(prefix="mcp setup space ") as directory:

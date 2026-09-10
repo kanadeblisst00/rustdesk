@@ -158,6 +158,8 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
     let exceeded = Arc::new(AtomicBool::new(false));
     let failed = Arc::new(AtomicBool::new(false));
     let limit = spec["max_log_bytes"].as_u64().unwrap_or(16 * 1024 * 1024);
+    let log_policy = spec["log_limit_policy"].as_str().unwrap_or("truncate");
+    state["log_limit_policy"] = json!(log_policy);
     let out = capture(
         output,
         stdout,
@@ -207,6 +209,7 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
                 state["timeout_ms"] = json!(timeout.as_millis() as u64);
             }
             if heartbeat.elapsed() >= Duration::from_secs(1) {
+                state["logs_truncated"] = json!(exceeded.load(Ordering::SeqCst));
                 state["updated_at_ms"] = json!(store::now());
                 store::write_json(&dir.join("state.json"), state)?;
                 heartbeat = Instant::now();
@@ -226,7 +229,7 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
                 Some("cancelled")
             } else if started.elapsed() >= timeout {
                 Some("timed_out")
-            } else if exceeded.load(Ordering::SeqCst) {
+            } else if log_policy == "terminate" && exceeded.load(Ordering::SeqCst) {
                 Some("log_limit")
             } else {
                 None
@@ -246,15 +249,18 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
     stop.store(true, Ordering::SeqCst);
     let out_result = out.join().map_err(|_| "stdout collector panicked");
     let err_result = err.join().map_err(|_| "stderr collector panicked");
+    state["logs_truncated"] = json!(exceeded.load(Ordering::SeqCst));
     out_result??;
     err_result??;
     monitor?;
     cleanup?;
-    if exceeded.load(Ordering::SeqCst) {
-        state["logs_truncated"] = json!(true);
-        state["success"] = json!(false);
-        if state["state"] == "exited" {
-            state["state"] = json!("log_limit");
+    if state["state"] != "exited" {
+        let status = child.process.wait().map_err(|e| e.to_string())?;
+        state["exit_code"] = json!(status.code());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            state["signal"] = json!(status.signal());
         }
     }
     Ok(())

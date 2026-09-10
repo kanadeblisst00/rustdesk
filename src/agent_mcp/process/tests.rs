@@ -408,6 +408,7 @@ fn timeout_cancel_and_log_limit_are_distinct() {
         let mut request = shell_spec(id, script);
         request["timeout_ms"] = json!(timeout);
         request["max_log_bytes"] = json!(limit);
+        request["log_limit_policy"] = json!("terminate");
         store.create(&request, |_| Ok(())).unwrap();
         let dir = store.directory(id).unwrap();
         let worker = std::thread::spawn(move || worker::run(&dir));
@@ -424,6 +425,42 @@ fn timeout_cancel_and_log_limit_are_distinct() {
         assert_eq!(state["state"], expected, "{state}");
         assert!(state["stdout_bytes"].as_u64().unwrap() <= limit);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn truncated_logs_preserve_real_exit_status_and_report_while_running() {
+    for code in [0, 7] {
+        let temp = Temp::new();
+        let store = temp.store();
+        let mut request = shell_spec("noisy", &format!(
+            "head -c 65536 /dev/zero; head -c 65536 /dev/zero >&2; sleep 2; exit {code}"
+        ));
+        request["max_log_bytes"] = json!(1024);
+        store.create(&request, |_| Ok(())).unwrap();
+        let dir = store.directory("noisy").unwrap();
+        let worker = std::thread::spawn(move || worker::run(&dir));
+        let started = Instant::now();
+        loop {
+            let state = store.status("noisy").unwrap();
+            if state["logs_truncated"] == true {
+                assert_eq!(state["state"], "running", "{state}");
+                assert!(state["exit_code"].is_null());
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        worker.join().unwrap().unwrap();
+        let state = store.status("noisy").unwrap();
+        assert_eq!(state["state"], "exited", "{state}");
+        assert_eq!(state["exit_code"], code);
+        assert_eq!(state["success"], code == 0);
+        assert_eq!(state["log_limit_policy"], "truncate");
+        assert_eq!(state["logs_truncated"], true);
+        assert_eq!(state["stdout_bytes"], 1024);
+        assert_eq!(state["stderr_bytes"], 1024);
     }
 }
 

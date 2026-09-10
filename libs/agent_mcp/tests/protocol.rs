@@ -171,6 +171,24 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
 }
 
 #[test]
+fn log_limit_policy_is_explicit_and_shared_by_workspace_commands() {
+    let tools = rustdesk_agent_mcp::catalog::tools();
+    for name in ["run_process", "run_workspace_process"] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        let schema = &tool["inputSchema"]["properties"]["log_limit_policy"];
+        assert_eq!(schema["default"], "truncate");
+        assert_eq!(schema["enum"], json!(["truncate", "terminate"]));
+    }
+    let mut args = json!({"session":"s","job_id":"noisy","executable":"program","cwd":std::env::temp_dir()});
+    for policy in ["truncate", "terminate"] {
+        args["log_limit_policy"] = json!(policy);
+        rustdesk_agent_mcp::process::validate("run_process", &args).unwrap();
+    }
+    args["log_limit_policy"] = json!("ignore");
+    assert!(rustdesk_agent_mcp::process::validate("run_process", &args).is_err());
+}
+
+#[test]
 fn durable_recovery_and_wait_schemas_are_bounded() {
     use rustdesk_agent_mcp::process::validate;
     validate(

@@ -134,8 +134,10 @@ def validate(manifest):
             if stage in ("prepare", "build", "test") and not commands:
                 raise MatrixError("prepare, build and test must each declare at least one command")
             for command in commands:
-                fields(command, ("executable", "args", "cwd", "env", "environment_script", "timeout_ms", "max_log_bytes"),
+                fields(command, ("executable", "args", "cwd", "env", "environment_script", "timeout_ms", "max_log_bytes", "log_limit_policy"),
                        ("executable",))
+                if command.get("log_limit_policy", "truncate") not in ("truncate", "terminate"):
+                    raise MatrixError("log_limit_policy must be truncate or terminate")
                 if "environment_script" in command:
                     setup = command["environment_script"]
                     fields(setup, ("path", "args", "timeout_ms"), ("path",))
@@ -301,6 +303,8 @@ class TargetRun:
                 "max_log_bytes": command.get("max_log_bytes", 16777216)}
         if workspace:
             args["workspace_id"] = self.workspace
+        if "log_limit_policy" in command:
+            args["log_limit_policy"] = command["log_limit_policy"]
         if "environment_script" in command:
             setup = command["environment_script"]
             args["environment_script"] = {**setup, "path": expand(setup["path"])}
@@ -317,7 +321,7 @@ class TargetRun:
         deadline = time.monotonic() + args["timeout_ms"] / 1000 + 60
         while True:
             entry.update({key: state.get(key) for key in
-                          ("state", "exit_code", "success", "source_unchanged", "source_verification", "workspace_error", "logs_truncated")})
+                          ("state", "exit_code", "success", "source_unchanged", "source_verification", "workspace_error", "logs_truncated", "log_limit_policy")})
             self.persist()
             self.check_stop()
             terminal = state["state"] in FINAL

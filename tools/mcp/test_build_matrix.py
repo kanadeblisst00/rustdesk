@@ -140,6 +140,16 @@ class MatrixTest(unittest.TestCase):
         self.assertEqual(suite.get("failures"), "0")
         self.assertEqual(len(self.fake.sessions), 0)
 
+    def test_explicit_log_policy_reaches_worker_and_rejects_unknown_policy(self):
+        spec = target()
+        spec["build"][0]["log_limit_policy"] = "terminate"
+        self.assertTrue(self.run_matrix([spec])["success"])
+        commands = [args for name, args in self.fake.calls if name == "run_workspace_process"]
+        self.assertEqual(commands[0]["log_limit_policy"], "terminate")
+        spec["build"][0]["log_limit_policy"] = "ignore"
+        with self.assertRaisesRegex(matrix.MatrixError, "log_limit_policy"):
+            matrix.validate({"version": 1, "targets": [spec]})
+
     def test_resume_uncertain_submission_reuses_ids_and_log_offsets(self):
         self.fake.uncertain = True
         first = self.run_matrix()
