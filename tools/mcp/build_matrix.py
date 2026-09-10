@@ -516,7 +516,7 @@ def main():
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--output", type=Path, default=Path("mcp-runs"))
     parser.add_argument("--parallel", type=int, choices=range(1, 5), default=3)
-    parser.add_argument("--allow-bootstrap", action="store_true", help="Execute declared dependency installation commands")
+    parser.add_argument("--allow-bootstrap", action="store_true", help="Execute reviewed bootstrap commands. Agents may enable this for task libraries/virtual environments using existing tools; missing software still requires the user to install it or explicitly authorize agent installation")
     parser.add_argument("--download-artifacts", action="store_true", help="Requires runner and HTTP MCP on the same host/filesystem")
     parser.add_argument("--validate", action="store_true", help="Validate only; no network or filesystem mutations")
     parser.add_argument("--url", default=os.environ.get("RUSTDESK_MCP_URL", "http://127.0.0.1:59940/mcp"))
@@ -533,7 +533,7 @@ def main():
             print("Manifest valid; no commands executed")
             return 0
         if not args.allow_bootstrap and any(t.get("bootstrap") for t in manifest["targets"]):
-            raise MatrixError("Manifest includes bootstrap commands; review them and pass --allow-bootstrap")
+            raise MatrixError("Manifest includes bootstrap commands; review them and pass --allow-bootstrap. Agents may do this for task libraries/virtual environments using existing tools without asking again. Missing software must be reported to the user for installation or explicit authorization; this flag is not that authorization")
         proxy = Proxy(args.url, os.environ.get("RUSTDESK_MCP_TOKEN", ""))
         if args.download_artifacts and proxy.host != "127.0.0.1":
             raise MatrixError("Artifact downloads require a local MCP endpoint and shared filesystem")

@@ -104,7 +104,19 @@ Windows shell 示例（可执行文件路径需按目标实际安装核对）：
 
 默认磁盘检查使用任务目录（如果已存在）或最近的已有父目录，预检不创建任务目录。工具查找只检查 PATH 中的文件，跳过相对 PATH 项；`version_verified:false` 和 `package_checks_performed:false` 表示尚未验证版本或包导入。`get_environment` 不安装软件、不执行扫描到的程序，也不输出任意环境变量。需要精确版本时使用 `run_process` 执行 `python --version`、`python -c "import pytest"`、`cmake --version` 等明确探针，并核对退出码和输出。
 
-依赖可以提前准备，也可以由构建清单声明安装命令，经过授权后作为普通命令任务执行。原生任务运行器不依赖 Python；运行 Python 项目时仍需目标机器的 Python 和项目依赖。建议为每个工作区创建独立虚拟环境，再调用其中解释器的绝对路径执行 `-m pip install -r ...`。激活 shell、切换目录或设置环境变量不会跨独立任务自动继承，应通过 `cwd`、`env` 和明确的可执行路径表达。
+在已经授权的任务范围内，agent 可以自行安装缺少的项目依赖库、使用已有工具创建虚拟环境，无需再次请示。优先复用合适的项目环境，或在工作区 `build/` 下创建隔离环境，遵守项目声明的依赖版本；安装后验证导入或运行相关测试。原生任务运行器不依赖 Python；运行 Python 项目时仍需目标机器上可用的解释器或已有 Conda。
+
+| 情况 | agent 行为 |
+| --- | --- |
+| 已有 Python/项目环境，缺少 pytest 等库 | 自行通过该环境的 `python -m pip install` 安装项目依赖并验证。 |
+| 已有 Python，缺少虚拟环境 | 自行执行 `python -m venv <工作区环境路径>`，随后使用该环境解释器。 |
+| 已有 Conda，需要项目专用环境或指定 Python 版本 | 自行 `conda create --prefix <工作区环境路径> python=<项目版本>`；环境内的 Python 属于已授权的环境准备。 |
+| 缺少独立 Python、Conda 本身、Git、编译器、SDK 或浏览器等基础软件 | 先通知用户缺少什么、为何需要、拟安装版本与范围；由用户安装，或获得明确授权后再安装。已有的同项明确授权无需重复询问。 |
+| 安装某依赖需要额外安装系统软件 | 按实际安装内容判断，不能因为外层命令是 pip/conda 就视为已授权的软件安装。 |
+
+仅 PATH 未发现可执行文件不能证明软件未安装，应先核对已知安装路径与执行身份。MCP 初始化指引、`get_capabilities.environment.dependency_policy` 和 `get_environment.dependency_policy` 均提供这条规则；`get_environment` 本身仍是只读探测，`automatic_installation:false` 表示原生预检不会直接安装。规则由 agent 遵守，通用 `run_process` 不会解析任意脚本并实施软件安装审批；RustDesk 的原有认证、只读设置和 OS 权限仍然有效。
+
+依赖准备可以由普通命令或构建清单执行。激活 shell、切换目录或设置环境变量不会跨独立任务自动继承，应通过 `cwd`、`env`、解释器绝对路径或 `conda run --prefix ...` 表达。
 
 `interactive_desktop_verified:false` 表示环境变量不能证明 GUI 可用。GUI 测试需要实际用户会话、图形环境及项目测试驱动；原生 UIA 仍仅 Windows 支持。
 
@@ -151,7 +163,7 @@ python3 tools/mcp/build_matrix.py matrix.json --run-id project-001 --parallel 3 
 执行顺序如下，每台设备内部串行，不同设备最多并行 4 个，默认 3 个：
 
 1. 检查控制端能力，连接终端，采集远端环境，创建本次运行专用工作区。
-2. preflight 检查工具；prepare 准备源码；可选 bootstrap 安装该工作区依赖。声明了 bootstrap 时，启动必须显式传 --allow-bootstrap；没有该参数会在连接前退出。这是运行器的显式执行选项，清单中的其他命令仍须由使用者审阅。
+2. preflight 检查工具；prepare 准备源码；可选 bootstrap 安装该工作区依赖。声明了 bootstrap 时，启动仍须传 --allow-bootstrap；没有该参数会在连接前退出。agent 审阅确认仅使用已有工具准备任务依赖/虚拟环境后，可自行传入该选项，无需再次询问用户；安装基础软件则须先通知用户或取得明确授权。这个开关不构成软件安装授权，也不会分析清单中任意命令的实际安装内容。
 3. 执行 Git rev-parse HEAD，核对完整提交哈希，再封存源码。git_head_matched_at_prepare 只记录准备阶段的 Git HEAD 检查，不代表所有文件都是干净提交内容；源码文件指纹独立记录。
 4. 顺序执行 build 和 test 命令，要求明确成功退出，且封存源码未被修改。每个阶段最多 32 条命令；prepare、build、test 均须至少一条。测试框架需配置“无测试即失败”等自身验收条件，退出 0 不自动证明覆盖完整。
 5. 收集指定的产物/项目测试报告 SHA-256 清单；即使构建或测试失败，也尽力收集已有报告，并可按 screenshot_on_failure 采集失败时远端截图。截图失败另行记录，不覆盖原来的命令错误。
