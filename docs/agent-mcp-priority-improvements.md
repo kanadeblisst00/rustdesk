@@ -62,3 +62,11 @@
 均为当前 `master` 的本地提交，未推送。新参数及 wait 接口需要控制端和被控端升级，stdio 代理也须更新。已运行旧 worker 不会自动获得新行为；Windows 实机仍需按新增 worker 测试以及真实 VS/Nuitka 项目验收。仅更新控制端时，恢复工具可能已查到旧 peer 的状态，但新 wait 查询会返回独立 `output_error`；不会丢弃已读状态或重跑任务。
 
 Windows 命令封装依据：[Microsoft cmd 文档](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd)、[Microsoft call 文档](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/call)、[Rust CommandExt 文档](https://doc.rust-lang.org/std/os/windows/process/trait.CommandExt.html)。
+
+## 后续：依赖准备与软件安装的授权边界
+
+按用户补充规则，agent 可以在已授权任务内自行安装项目依赖、用已有 Python/Conda 创建环境；已有 Conda 环境内的指定 Python 版本也属于环境准备。缺少独立 Python、Conda 本身或其他基础软件时，须通知用户安装或取得同项明确授权。安装后应验证，优先隔离到项目环境；不能把包管理器命令或 `--allow-bootstrap` 当作安装基础软件的授权。具体分类见构建文档的“环境检查与依赖准备”。
+
+本次最小化审查：`libs/agent_mcp/src/catalog.rs` 只扩展 MCP 初始化指引；`libs/agent_mcp/src/process.rs` 新增共用策略数据；`src/agent_mcp/mod.rs` 和 `process/environment.rs` 只向能力/环境观察返回策略，后者额外发现 Conda；`tools/mcp/build_matrix.py` 只澄清 bootstrap 帮助和错误提示；本文件与构建文档记录契约。命令启动、既有审批开关、认证及 OS 权限没有改变，此规则由 agent 遵守，非命令沙箱强制审批。
+
+验证：协议 33 项、环境探测 2 项、构建矩阵 18 项通过，协议 Clippy 严格检查和 `git diff --check` 通过。没有安装远端依赖或基础软件，也未部署新包。

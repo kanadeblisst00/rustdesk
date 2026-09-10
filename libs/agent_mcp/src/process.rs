@@ -4,6 +4,20 @@ pub const WIRE_FIELD: u32 = 50002;
 pub const WIRE_VERSION: &str = "rustdesk-process/1";
 pub const MAX_WIRE_BYTES: usize = 1024 * 1024;
 
+pub fn dependency_policy() -> Value {
+    json!({
+        "project_libraries":"agent_may_install_for_authorized_task",
+        "virtual_environments":"agent_may_create_using_existing_tools",
+        "conda_environment_python":"allowed_using_existing_conda",
+        "missing_software":"notify_user_to_install_or_explicitly_authorize_agent",
+        "software_examples":["standalone Python","Conda","Git","compiler","SDK","browser"],
+        "preferred_scope":"isolated_project_environment",
+        "verify_before_installing":true,
+        "verify_after_installing":true,
+        "enforcement":"agent_guidance_not_command_sandbox"
+    })
+}
+
 pub fn tools() -> Vec<Value> {
     let id = json!({"type":"string","minLength":1,"maxLength":64});
     let mut result = Vec::new();

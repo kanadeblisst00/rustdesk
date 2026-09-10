@@ -100,7 +100,7 @@ pub(super) fn observe(identity: &Identity, args: &Value) -> Result<Value, String
             .collect::<Result<_, _>>()?,
         None => vec![
             "git", "python3", "python", "cargo", "rustc", "cmake", "ninja", "node", "npm",
-            "flutter", "dart", "dotnet", "clang", "gcc", "go", "java", "pwsh",
+            "flutter", "dart", "dotnet", "clang", "gcc", "go", "java", "pwsh", "conda",
         ],
     };
     #[cfg(windows)]
@@ -151,7 +151,7 @@ pub(super) fn observe(identity: &Identity, args: &Value) -> Result<Value, String
         })
         .collect();
     Ok(
-        json!({"os":std::env::consts::OS,"process_arch":std::env::consts::ARCH,"logical_cpus":std::thread::available_parallelism().map(|n| n.get()).ok(),"user":user,"environment":visible,"console":console,"job_storage_path":root,"disk":{"path":path,"space":space(&path)?},"executables":tools,"native_uia":cfg!(windows),"interactive_desktop_verified":false,"dependencies_modified":false,"package_checks_performed":false,"note":"Executable discovery checks PATH files, not versions or package imports. Use explicit run_process probes and provisioning commands. No dependencies were installed."}),
+        json!({"os":std::env::consts::OS,"process_arch":std::env::consts::ARCH,"logical_cpus":std::thread::available_parallelism().map(|n| n.get()).ok(),"user":user,"environment":visible,"console":console,"job_storage_path":root,"disk":{"path":path,"space":space(&path)?},"executables":tools,"native_uia":cfg!(windows),"interactive_desktop_verified":false,"dependencies_modified":false,"package_checks_performed":false,"dependency_policy":rustdesk_agent_mcp::process::dependency_policy(),"note":"Executable discovery checks PATH files, not versions or package imports. Use explicit run_process probes and follow dependency_policy for any provisioning commands. No dependencies were installed."}),
     )
 }
 
