@@ -46,7 +46,7 @@ fn wide(path: &OsStr) -> Vec<u16> {
     path.encode_wide().chain(Some(0)).collect()
 }
 
-fn system_directory() -> Result<PathBuf, String> {
+pub(in super::super) fn system_directory() -> Result<PathBuf, String> {
     use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
     let mut buffer = vec![0u16; 32768];
     let size = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;

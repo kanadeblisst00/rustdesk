@@ -7,6 +7,8 @@ mod tests;
 mod worker;
 mod workspace;
 mod workspace_files;
+#[cfg(windows)]
+mod setup;
 
 use super::*;
 use hbb_common::{message_proto::Message, protobuf::UnknownValueRef};

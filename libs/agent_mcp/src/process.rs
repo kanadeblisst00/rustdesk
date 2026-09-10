@@ -21,10 +21,12 @@ pub fn tools() -> Vec<Value> {
     ] {
         let mut properties = properties.as_object().cloned().unwrap_or_default();
         if name == "run_process" {
+            properties.insert("environment_script".into(), json!({"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"args":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":4096}},"timeout_ms":{"type":"integer","minimum":100,"maximum":120000}},"required":["path"],"additionalProperties":false,"description":"Windows only: run an absolute .bat/.cmd setup script (e.g. vcvars64.bat), capture its Unicode environment in memory, then launch executable/args normally. Setup inherits the authorized user environment; env/unset_env apply after capture. Setup has a separate timeout (default 120 seconds) and the main command keeps timeout_ms. Setup failure/cancellation never launches the command. Quotes, %, !, ^ and control characters in setup path/args are rejected rather than reinterpreted by CALL. Read setup output with stream:setup."}));
             properties.insert("unset_env".into(), json!({"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"maxLength":256},"description":"Remove inherited variables. env values may be empty strings; empty and absent are different."}));
             properties.insert("shell".into(), json!({"type":"string","enum":["none","cmd","powershell"],"description":"Default none preserves direct argv. Windows cmd/powershell require executable to name that shell and exactly one args entry containing the script, without /c or -Command wrappers. Script syntax is interpreted by the selected shell."}));
         }
         if name == "read_process_output" {
+            properties.insert("stream".into(), json!({"type":"string","enum":["stdout","stderr","setup"]}));
             properties.insert("encoding".into(), json!({"type":"string","enum":["auto","utf-8","oem","cp936","base64"],"description":"Default auto compares strict UTF-8 and Windows OEM; ambiguous bytes return text:null instead of guessing. Explicit cp936 selects GBK. Failed decoding returns text:null; byte offsets and data_base64 remain authoritative. A chunk may split a multibyte character."}));
             properties.insert("tail_lines".into(), json!({"type":"integer","minimum":1,"maximum":1000,"description":"Read the last N LF-delimited lines within max_bytes (default 64 KiB). Mutually exclusive with offset. truncated_start means the byte limit cut the requested tail; continue using byte offsets for full logs."}));
         }
@@ -81,6 +83,29 @@ pub fn validate(operation: &str, arguments: &Value) -> Result<(), String> {
         }
     }
     if operation == "run_process" {
+        if let Some(setup) = arguments.get("environment_script") {
+            let path = setup["path"]
+                .as_str()
+                .ok_or("Missing environment_script.path")?;
+            let lower = path.to_ascii_lowercase();
+            if !(lower.ends_with(".bat") || lower.ends_with(".cmd")) {
+                return Err("environment_script.path must name a .bat or .cmd file".into());
+            }
+            for value in std::iter::once(path).chain(
+                setup["args"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str),
+            ) {
+                if value
+                    .chars()
+                    .any(|c| c.is_control() || matches!(c, '"' | '%' | '!' | '^'))
+                {
+                    return Err("environment_script path/args cannot contain quotes, %, !, ^ or control characters; use direct argv for literal program arguments".into());
+                }
+            }
+        }
         for key in ["executable", "cwd"] {
             if arguments[key].as_str().is_some_and(|v| v.contains('\0')) {
                 return Err(format!("{key} contains NUL"));

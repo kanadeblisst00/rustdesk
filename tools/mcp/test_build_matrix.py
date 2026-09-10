@@ -294,6 +294,19 @@ class MatrixTest(unittest.TestCase):
         self.assertEqual(request["env"][0]["value"], literal)
         self.assertEqual(request["cwd"], "build")
 
+    def test_environment_script_is_validated_and_forwarded(self):
+        item = target()
+        setup = {"path": "C:\\Program Files\\VS\\vcvars64.bat", "args": ["x64"], "timeout_ms": 30000}
+        item["build"][0]["environment_script"] = setup
+        self.assertTrue(self.run_matrix([item])["success"])
+        build = next(job for job in self.fake.jobs.values() if job["request"]["executable"] == "cmake")
+        self.assertEqual(build["request"]["environment_script"], setup)
+        for invalid in [{"path": "x.exe"}, {"path": "x.cmd", "args": ["%PATH%"]},
+                        {"path": "x.cmd", "timeout_ms": 0}, {"path": "x.cmd", "extra": True}]:
+            item["build"][0]["environment_script"] = invalid
+            with self.assertRaises(matrix.MatrixError):
+                matrix.validate({"version": 1, "targets": [item]})
+
     def test_remote_error_content_is_not_echoed(self):
         class Proxy:
             def forward(self, _):

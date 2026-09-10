@@ -90,6 +90,40 @@ fn validates_paths_nul_and_environment() {
 }
 
 #[test]
+fn validates_environment_scripts_without_interpreting_batch_metacharacters() {
+    let mut request = spec("setup");
+    request["environment_script"] =
+        json!({"path":"C:\\Program Files\\VS\\vcvars64.bat","args":["x64"]});
+    model::validate("run_process", &request).unwrap();
+    for arg in ["x\" & echo bad", "%PATH%", "!PATH!", "x\r\necho bad", "x^y"] {
+        request["environment_script"]["args"] = json!([arg]);
+        assert!(model::validate("run_process", &request).is_err());
+    }
+    request["environment_script"] = json!({"path":"C:\\script.exe"});
+    assert!(model::validate("run_process", &request).is_err());
+    request["environment_script"] = json!({"path":"C:\\setup.cmd","unexpected":true});
+    assert!(model::validate("run_process", &request).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn environment_scripts_fail_explicitly_on_non_windows_peers() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let mut request = shell_spec("setup", "printf must-not-start");
+    request["environment_script"] = json!({"path":"C:\\setup.cmd"});
+    store.create(&request, |_| Ok(())).unwrap();
+    worker::run(&store.directory("setup").unwrap()).unwrap();
+    let state = store.status("setup").unwrap();
+    assert_eq!(state["state"], "failed");
+    assert!(state["error"]
+        .as_str()
+        .unwrap()
+        .contains("requires a Windows peer"));
+    assert_eq!(state["stdout_bytes"], 0);
+}
+
+#[test]
 #[cfg(unix)]
 fn empty_environment_values_and_unset_are_distinct_in_real_commands() {
     let temp = Temp::new();

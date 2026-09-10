@@ -134,8 +134,19 @@ def validate(manifest):
             if stage in ("prepare", "build", "test") and not commands:
                 raise MatrixError("prepare, build and test must each declare at least one command")
             for command in commands:
-                fields(command, ("executable", "args", "cwd", "env", "timeout_ms", "max_log_bytes"),
+                fields(command, ("executable", "args", "cwd", "env", "environment_script", "timeout_ms", "max_log_bytes"),
                        ("executable",))
+                if "environment_script" in command:
+                    setup = command["environment_script"]
+                    fields(setup, ("path", "args", "timeout_ms"), ("path",))
+                    if (not isinstance(setup["path"], str) or not setup["path"].lower().endswith((".bat", ".cmd"))
+                            or not isinstance(setup.get("args", []), list) or len(setup.get("args", [])) > 32
+                            or any(not isinstance(v, str) or len(v) > 4096
+                                   or any(ord(c) < 32 or 127 <= ord(c) <= 159 or c in '\"%!^' for c in v)
+                                   for v in [setup["path"], *setup.get("args", [])])
+                            or type(setup.get("timeout_ms", 120000)) is not int
+                            or not 100 <= setup.get("timeout_ms", 120000) <= 120000):
+                        raise MatrixError("Invalid Windows environment_script path, arguments or timeout")
                 if (not isinstance(command["executable"], str) or not command["executable"]
                         or "\0" in command["executable"]):
                     raise MatrixError("Command executable is required")
@@ -290,6 +301,11 @@ class TargetRun:
                 "max_log_bytes": command.get("max_log_bytes", 16777216)}
         if workspace:
             args["workspace_id"] = self.workspace
+        if "environment_script" in command:
+            setup = command["environment_script"]
+            args["environment_script"] = {**setup, "path": expand(setup["path"])}
+            if "args" in setup:
+                args["environment_script"]["args"] = [expand(v) for v in setup["args"]]
         entry = self.report["steps"].setdefault(label, {"job_id": job})
         if entry.get("state") not in (None, "submission_pending"):
             # A recorded job must still exist. Never recreate a removed job on resume.
