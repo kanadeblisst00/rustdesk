@@ -98,13 +98,42 @@ pub(super) fn hash_file(path: &Path, budget: &mut Budget) -> Result<(u64, String
     Ok((read, format!("{:x}", hash.finalize())))
 }
 
-fn source_snapshot(dir: &Path) -> Result<Value, String> {
+fn source_excludes(value: &Value) -> Result<Vec<String>, String> {
+    let mut paths = Vec::new();
+    if let Some(values) = value.as_array() {
+        for value in values {
+            let path = value.as_str().ok_or("Invalid source_excludes path")?;
+            if path.len() > 4096
+                || path.split('/').any(|p| {
+                    p.is_empty()
+                        || matches!(p, "." | "..")
+                        || p.contains(['\\', ':', '\0', '*', '?'])
+                        || p.ends_with(['.', ' '])
+                })
+            {
+                return Err("source_excludes must contain normal source-relative paths, without wildcards or trailing slashes".into());
+            }
+            paths.push(path.to_owned());
+        }
+    } else if !value.is_null() {
+        return Err("source_excludes must be an array".into());
+    }
+    if paths.len() > 64 {
+        return Err("Maximum 64 source_excludes paths".into());
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn source_snapshot(dir: &Path, excludes: &[String]) -> Result<Value, String> {
     fn walk(
         root: &Path,
         relative: &str,
         records: &mut Vec<Value>,
         budget: &mut Budget,
         depth: usize,
+        excludes: &[String],
     ) -> Result<(), String> {
         budget.check()?;
         if depth > 32 {
@@ -116,9 +145,7 @@ fn source_snapshot(dir: &Path) -> Result<Value, String> {
                 .file_name()
                 .into_string()
                 .map_err(|_| "Source filenames must be UTF-8")?;
-            if records.len() >= 4096 {
-                return Err("Source manifest exceeds 4096 entries".into());
-            }
+            budget.check()?;
             let kind = entry.file_type().map_err(|e| e.to_string())?;
             if kind.is_dir() && matches!(name.as_str(), ".git" | "__pycache__" | ".pytest_cache") {
                 continue;
@@ -128,9 +155,21 @@ fn source_snapshot(dir: &Path) -> Result<Value, String> {
             } else {
                 format!("{relative}/{name}")
             };
+            if excludes.iter().any(|excluded| {
+                if cfg!(windows) {
+                    path.eq_ignore_ascii_case(excluded)
+                } else {
+                    path == *excluded
+                }
+            }) {
+                continue;
+            }
+            if records.len() >= 4096 {
+                return Err("Source manifest exceeds 4096 entries; keep generated files in build/ or explicitly seal with source_excludes after reviewing the paths".into());
+            }
             if kind.is_dir() {
                 records.push(json!({"path":path,"directory":true}));
-                walk(&entry.path(), &path, records, budget, depth + 1)?;
+                walk(&entry.path(), &path, records, budget, depth + 1, excludes)?;
             } else {
                 let (bytes, hash) = hash_file(&entry.path(), budget)?;
                 records.push(json!({"path":path,"bytes":bytes,"sha256":hash}));
@@ -145,11 +184,24 @@ fn source_snapshot(dir: &Path) -> Result<Value, String> {
         started: Instant::now(),
     };
     let mut records = Vec::new();
-    walk(&dir.join("source"), "", &mut records, &mut budget, 0)?;
+    walk(
+        &dir.join("source"),
+        "",
+        &mut records,
+        &mut budget,
+        0,
+        excludes,
+    )?;
     records.sort_by_key(|v| v["path"].as_str().unwrap_or("").to_owned());
-    let digest = Sha256::digest(serde_json::to_vec(&records).map_err(|e| e.to_string())?);
+    // Preserve existing seals when no additional exclusions are selected.
+    let snapshot = if excludes.is_empty() {
+        json!(records)
+    } else {
+        json!({"files":records,"source_excludes":excludes})
+    };
+    let digest = Sha256::digest(serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?);
     Ok(
-        json!({"sha256":format!("{digest:x}"),"entries":records.len(),"bytes":budget.bytes,"captured_at_ms":store::now(),"excluded_directories":[".git","__pycache__",".pytest_cache"]}),
+        json!({"sha256":format!("{digest:x}"),"entries":records.len(),"bytes":budget.bytes,"captured_at_ms":store::now(),"excluded_directories":[".git","__pycache__",".pytest_cache"],"source_excludes":excludes}),
     )
 }
 
@@ -254,7 +306,11 @@ pub(super) fn call(
         }
         "seal_workspace" => {
             idle(&dir)?;
-            metadata["source"] = source_snapshot(&dir)?;
+            let excludes = source_excludes(
+                args.get("source_excludes")
+                    .unwrap_or(&metadata["source"]["source_excludes"]),
+            )?;
+            metadata["source"] = source_snapshot(&dir, &excludes)?;
             store::write_json(&dir.join("workspace.json"), &metadata)?;
             Ok(metadata)
         }
@@ -281,7 +337,10 @@ pub(super) fn call(
                 return store.create(&command, launch);
             }
             let mut lease = Lease::acquire(&dir, job)?;
-            let current = source_snapshot(&dir)?;
+            let current = source_snapshot(
+                &dir,
+                &source_excludes(&metadata["source"]["source_excludes"])?,
+            )?;
             if metadata["source"]["sha256"].is_null() {
                 return Err("Source is unsealed; run seal_workspace after upload/checkout, then retry with the same job_id. Use run_process for preparation commands that do not require sealed source".into());
             }
@@ -337,7 +396,7 @@ pub(super) fn call(
                 );
             }
             Ok(
-                json!({"workspace_id":id,"job_id":job,"source":context["source"],"source_revision":context["source_revision"],"revision_verified":false,"source_unchanged_after_job":state["source_unchanged"],"command_success":state["success"],"provenance":"workspace snapshot after latest job; not proof that this command created every file","captured_at_ms":store::now(),"files":files}),
+                json!({"workspace_id":id,"job_id":job,"source":context["source"],"source_revision":context["source_revision"],"revision_verified":false,"source_unchanged_after_job":state["source_unchanged"],"source_verification":state["source_verification"],"command_success":state["success"],"provenance":"workspace snapshot after latest job; not proof that this command created every file","captured_at_ms":store::now(),"files":files}),
             )
         }
         _ => Err("Unknown workspace operation".into()),
@@ -357,10 +416,14 @@ pub(super) fn finish(job_dir: &Path, state: &mut Value) -> Result<(), String> {
             .as_str()
             .ok_or("Invalid workspace context")?,
     )?;
-    let current = source_snapshot(&dir)?;
     state["workspace_id"] = context["workspace_id"].clone();
     state["source_sha256"] = context["source"]["sha256"].clone();
+    let current = source_snapshot(
+        &dir,
+        &source_excludes(&context["source"]["source_excludes"])?,
+    )?;
     state["source_unchanged"] = json!(current["sha256"] == context["source"]["sha256"]);
+    state["source_verification"] = json!({"state":if state["source_unchanged"] == true {"passed"} else {"changed"},"source_excludes":context["source"]["source_excludes"],"current_sha256":current["sha256"]});
     Ok(())
 }
 

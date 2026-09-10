@@ -486,3 +486,77 @@ fn workspace_commands_release_lease_and_artifacts_are_bound_to_latest_job() {
     workspace::call(&store, "remove_workspace", &workspace_args, |_| panic!()).unwrap();
     assert_eq!(store.status("build").unwrap()["state"], "exited");
 }
+
+#[test]
+#[cfg(unix)]
+fn generated_outputs_are_excluded_but_source_changes_are_still_detected() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let request = json!({"workspace_id":"generated","source_revision":"test","source_excludes":["dist",".cache"]});
+    let created = workspace::call(&store, "create_workspace", &request, |_| panic!()).unwrap();
+    let source = PathBuf::from(created["paths"]["source"].as_str().unwrap());
+    std::fs::write(source.join("main.txt"), "original").unwrap();
+    let seal = workspace::call(&store, "seal_workspace", &request, |_| panic!()).unwrap();
+    std::fs::create_dir(source.join("dist")).unwrap();
+    for index in 0..4100 {
+        std::fs::write(source.join("dist").join(index.to_string()), "output").unwrap();
+    }
+    let mut run = shell_spec("generated", "printf finished");
+    run["workspace_id"] = json!("generated");
+    run["cwd"] = json!("build");
+    workspace::call(&store, "run_workspace_process", &run, |_| Ok(())).unwrap();
+    worker::run(&store.directory("generated").unwrap()).unwrap();
+    let state = store.status("generated").unwrap();
+    assert_eq!(state["success"], true);
+    assert_eq!(state["source_verification"]["state"], "passed");
+    let retained = workspace::call(
+        &store,
+        "seal_workspace",
+        &json!({"workspace_id":"generated"}),
+        |_| panic!(),
+    )
+    .unwrap();
+    assert_eq!(retained["source"]["sha256"], seal["source"]["sha256"]);
+    std::fs::write(source.join("main.txt"), "modified").unwrap();
+    run["job_id"] = json!("changed");
+    assert!(
+        workspace::call(&store, "run_workspace_process", &run, |_| panic!())
+            .unwrap_err()
+            .contains("Source changed")
+    );
+    for path in ["../dist", "dist/", "dist/*", "C:dist", "", "dist\\cache"] {
+        let invalid = json!({"workspace_id":"generated","source_excludes":[path]});
+        assert!(workspace::call(&store, "seal_workspace", &invalid, |_| panic!()).is_err());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn failed_post_build_scan_preserves_command_success_and_releases_workspace() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let request = json!({"workspace_id":"overflow","source_revision":"test"});
+    let created = workspace::call(&store, "create_workspace", &request, |_| panic!()).unwrap();
+    workspace::call(&store, "seal_workspace", &request, |_| panic!()).unwrap();
+    let mut run = shell_spec("overflow", "printf finished");
+    run["workspace_id"] = json!("overflow");
+    run["cwd"] = json!("build");
+    workspace::call(&store, "run_workspace_process", &run, |_| Ok(())).unwrap();
+    let source = PathBuf::from(created["paths"]["source"].as_str().unwrap());
+    for index in 0..4100 {
+        std::fs::write(source.join(index.to_string()), "generated").unwrap();
+    }
+    worker::run(&store.directory("overflow").unwrap()).unwrap();
+    let state = store.status("overflow").unwrap();
+    assert_eq!(state["state"], "exited");
+    assert_eq!(state["exit_code"], 0);
+    assert_eq!(state["success"], true);
+    assert!(state["source_unchanged"].is_null());
+    assert_eq!(state["source_verification"]["state"], "error");
+    assert!(state["workspace_error"]
+        .as_str()
+        .unwrap()
+        .contains("4096 entries"));
+    let workspace = workspace::call(&store, "get_workspace", &request, |_| panic!()).unwrap();
+    assert!(workspace["lease"].is_null());
+}
