@@ -171,6 +171,19 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
 }
 
 #[test]
+fn workspace_replacement_requires_an_explicit_checksum_object() {
+    let mut args = json!({"session":"s","workspace_id":"w","path":"source/input","offset":0,
+        "total_bytes":0,"sha256":"a".repeat(64),"data_base64":""});
+    for options in [json!(true), json!({}), json!({"expected_sha256":"short"}),
+        json!({"expected_sha256":"a".repeat(64),"force":true})] {
+        args["replace"] = options;
+        assert!(rustdesk_agent_mcp::process::validate("write_workspace_file", &args).is_err());
+    }
+    args["replace"] = json!({"expected_sha256":"b".repeat(64)});
+    rustdesk_agent_mcp::process::validate("write_workspace_file", &args).unwrap();
+}
+
+#[test]
 fn log_limit_policy_is_explicit_and_shared_by_workspace_commands() {
     let tools = rustdesk_agent_mcp::catalog::tools();
     for name in ["run_process", "run_workspace_process"] {

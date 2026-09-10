@@ -10,6 +10,9 @@ use std::{
 
 const CHUNK: usize = 16 * 1024;
 
+#[path = "workspace_replace.rs"]
+mod replacement;
+
 fn target(root: &Path, path: &str, create_parents: bool) -> Result<PathBuf, String> {
     let parts: Vec<_> = path.split('/').collect();
     if parts.len() < 2
@@ -97,13 +100,29 @@ pub(super) fn call(root: &Path, operation: &str, args: &Value) -> Result<Value, 
         );
     }
     let absolute = target(root, path, true)?;
-    let complete = || json!({"workspace_id":args["workspace_id"],"path":path,"remote_path":absolute,"next_offset":total,"total_bytes":total,"sha256":sha256.to_ascii_lowercase(),"complete":true});
+    let replacement = args.get("replace").map(|options| replacement::Replacement::new(root, path, options)).transpose()?;
+    let complete = || {
+        let mut result = json!({"workspace_id":args["workspace_id"],"path":path,"remote_path":absolute,"next_offset":total,"total_bytes":total,"sha256":sha256.to_ascii_lowercase(),"complete":true});
+        if let Some(replacement) = &replacement {
+            result["replacement"] = replacement.info();
+        }
+        result
+    };
     if absolute.exists() {
         let (size, hash) = digest(&absolute)?;
         if size == total && hash.eq_ignore_ascii_case(sha256) {
+            if let Some(replacement) = &replacement {
+                replacement.completed(&absolute, &hash)?;
+            }
             return Ok(complete());
         }
-        return Err("Workspace file already exists with different content; choose another path or explicitly remove it using an authorized command".into());
+        if let Some(replacement) = &replacement {
+            replacement.check_hash(&hash)?;
+        } else {
+            return Err("Workspace file already exists with different content; provide replace.expected_sha256 for verified replacement with backup, or choose another path".into());
+        }
+    } else if replacement.is_some() {
+        return Err("Replacement requires an existing file; omit replace to create a new file".into());
     }
     let uploads = root.join(".uploads");
     store::private_dir(&uploads)?;
@@ -120,9 +139,13 @@ pub(super) fn call(root: &Path, operation: &str, args: &Value) -> Result<Value, 
             return Err("Maximum 64 unfinished workspace uploads".into());
         }
         store::private_dir(&staging)?;
+        let mut metadata = json!({"path":path,"total_bytes":total,"sha256":sha256.to_ascii_lowercase()});
+        if let Some(options) = args.get("replace") {
+            metadata["replace"] = options.clone();
+        }
         store::write_json(
             &staging.join("upload.json"),
-            &json!({"path":path,"total_bytes":total,"sha256":sha256.to_ascii_lowercase()}),
+            &metadata,
         )?;
         File::create(staging.join("data")).map_err(|e| e.to_string())?;
     }
@@ -131,6 +154,7 @@ pub(super) fn call(root: &Path, operation: &str, args: &Value) -> Result<Value, 
     if metadata["path"] != path
         || metadata["total_bytes"] != total
         || metadata["sha256"] != sha256.to_ascii_lowercase()
+        || metadata["replace"] != args["replace"]
     {
         return Err("Upload parameters conflict with retained upload; reuse the original size/hash or choose another path".into());
     }
@@ -178,9 +202,13 @@ pub(super) fn call(root: &Path, operation: &str, args: &Value) -> Result<Value, 
                     .into(),
             );
         }
-        // Hard-link publication refuses an existing destination, including a concurrent writer.
-        fs::hard_link(&staged, &absolute)
-            .map_err(|e| format!("Publish verified workspace file without overwrite: {e}"))?;
+        if let Some(replacement) = &replacement {
+            replacement.publish(&staged, &target(root, path, false)?)?;
+        } else {
+            // Hard-link publication refuses an existing destination, including a concurrent writer.
+            fs::hard_link(&staged, &absolute)
+                .map_err(|e| format!("Publish verified workspace file without overwrite: {e}"))?;
+        }
         fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
         return Ok(complete());
     }
