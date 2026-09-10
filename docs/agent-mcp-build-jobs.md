@@ -88,6 +88,16 @@ Windows shell 示例（可执行文件路径需按目标实际安装核对）：
 
 工作区保存在命令存储目录的 `.workspaces` 子目录。worker 异常退出留下的租约不会自动抢占，以免两个构建写入同一目录。用 `get_workspace` 查看租约的任务 ID，先查明未知任务状态再人工恢复。
 
+## 断线恢复与等待
+
+任务存储本来就独立于 session UUID，按远端 OS 身份和 `job_id` 保存。新增 `recover_processes({device_id,job_id?,reconnect?,timeout_ms?})` 可在旧 session 不可用时按设备恢复查询。默认找到已有终端会话；传输已关闭时重连一次，没有会话时打开 headless 终端。密码、OS 登录、2FA 或远端确认仍走既有认证流程，并返回在 `connection` 中；不会自动重放运行、取消或安装命令。`reconnect:false` 仅使用已有连接。工具需要控制端可写权限，因为默认可能创建连接；普通状态与日志查询继续允许只读。
+
+不传 `job_id` 时返回当前终端身份的保留任务列表；传入原 ID 时返回状态及 stdout/stderr/setup 各最近最多 8192 字节、字节游标和编码元数据。`recovery_state:observed` 只表示查询到了记录，不表示任务成功；连接或读取失败返回 `connection_required/unavailable`，不会把任务写成失败。状态读取成功但日志读取再次断线时，保留刚读取的 job 并单独报告 `output_error`。必须使用原 OS 身份；连接凭据仍用 `input_password`，不由恢复工具收集或保存。新建恢复会话的 UUID 会返回，后续可继续使用或显式断开。
+
+`wait_for_process` 通过当前终端会话接收原 `job_id`、`timeout_ms`（0–10000，默认 1000）、三个流的 `*_offset`，以及可选 `after_state/after_phase`。返回 `job`、`event` 和 `output`；event 包括 `completed`、`unknown`、`state_changed`、`phase_changed`、`output`、`timeout`。每流默认 16384 字节、最大 32768，按各 `next_offset` 继续。已完成时仍可能有未读完的日志，应以 `eof` 为准；等待超时不会修改任务、取消进程或改变执行超时。
+
+状态现在还返回 `observed_at_ms`、`heartbeat_age_ms`、`last_known_state`。心跳超过 30 秒依旧返回 `unknown`，同时保留最后记录状态供诊断；不能靠 PID 存在或最近有输出猜测任务还活着，也不能自动重跑未知任务。观察窗口最长 10 秒，在专用阻塞线程执行，不占用工作区写锁。
+
 ## 环境检查与依赖准备
 
 完成终端认证后调用 `get_environment`，可指定 `executables:["git","python","cmake"]` 和用于检查磁盘空间的绝对目录 `path`。返回 OS、运行进程架构、逻辑 CPU 数、终端执行身份、选定环境变量、实际任务存储路径、可用磁盘空间和工具路径。Windows 登录用户令牌使用对应用户的环境；终端按现有规则授权为当前服务进程时，会明确显示该身份来源。

@@ -70,6 +70,15 @@ class ProxyTest(unittest.TestCase):
             proxy_module.Proxy("http://localhost:59940/mcp",TOKEN).forward({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"connect_device","arguments":{"timeout_ms":120000}}})
             connection.assert_called_once_with("127.0.0.1",59940,timeout=155)
 
+    def test_recovery_timeout_covers_connection_queue_and_readonly_queries(self):
+        with patch.object(proxy_module.http.client,"HTTPConnection") as connection:
+            response = MagicMock(status=200)
+            response.read.return_value = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+            connection.return_value.getresponse.return_value = response
+            proxy_module.Proxy("http://localhost:59940/mcp",TOKEN).forward({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recover_processes","arguments":{"device_id":"device","timeout_ms":30000}}})
+            connection.assert_called_once_with("127.0.0.1",59940,timeout=95)
+            self.assertEqual(connection.return_value.request.call_count, 1)
+
     def test_oversized_request_is_rejected_before_http_and_proxy_recovers(self):
         with patch.object(proxy_module.http.client,"HTTPConnection") as connection, patch.object(proxy_module,"emit") as emit:
             proxy_module.forward_and_emit(proxy_module.Proxy("http://localhost:59940/mcp",TOKEN),{"id":1,"payload":"x" * proxy_module.MAX_REQUEST})

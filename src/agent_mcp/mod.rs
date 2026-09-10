@@ -213,8 +213,8 @@ impl Backend for DesktopBackend {
                 json!({"transport":["streamable-http","stdio-proxy"],
                 "desktop":true,"terminal":true,"files":true,"headless":true,
                 "background_controller":daemon::active(),"headless_required":daemon::active(),
-                "processes":{"supported":true,"requires_upgraded_peer":true,"session_kind":"terminal","durable_logs":true,"survives_disconnect":true,"max_active":16,"max_retained":256,"default_timeout_ms":3600000,"max_timeout_ms":86400000,"extend_timeout":true,"timeout_policy":"terminate_process_tree","windows_shells":["none","cmd","powershell"],"output_encodings":["auto","utf-8","oem","cp936","base64"],"default_log_bytes_per_stream":16777216,"max_log_bytes_per_stream":268435456,"recovery":"query_same_job_id; stale worker is unknown, never automatically restarted"},
-                "workspaces":{"supported":true,"requires_upgraded_peer":true,"max_workspaces":64,"exclusive_commands":true,"file_chunk_bytes":16384,"file_transfer_session_required":false,"source_fingerprint":"sha256","artifact_checksums":"sha256","source_revision":"caller-declared; not Git verified"},
+                "processes":{"supported":true,"requires_upgraded_peer":true,"session_kind":"terminal","durable_logs":true,"survives_disconnect":true,"max_active":16,"max_retained":256,"default_timeout_ms":3600000,"max_timeout_ms":86400000,"extend_timeout":true,"timeout_policy":"terminate_process_tree","environment_script":true,"wait_for_process":true,"recover_processes_by_device":true,"windows_shells":["none","cmd","powershell"],"output_encodings":["auto","utf-8","oem","cp936","base64"],"default_log_bytes_per_stream":16777216,"max_log_bytes_per_stream":268435456,"recovery":"query_same_job_id; stale worker is unknown, never automatically restarted"},
+                "workspaces":{"supported":true,"requires_upgraded_peer":true,"max_workspaces":64,"exclusive_commands":true,"file_chunk_bytes":16384,"file_transfer_session_required":false,"source_fingerprint":"sha256","source_excludes":true,"separate_source_verification":true,"artifact_checksums":"sha256","source_revision":"caller-declared; not Git verified"},
                 "concurrency":{"http_control_slots":8,"http_event_wait_slots":4,"connection_queue":"per device and kind","connection_queue_timeout_ms":30000,"stdio_default_parallel":8},
                 "environment":{"inspection":true,"requires_upgraded_peer":true,"versions_and_packages":"explicit command probes","automatic_installation":false},
                 "clipboard":"remote text read/write (permission dependent)",
@@ -238,6 +238,10 @@ impl Backend for DesktopBackend {
                 return Err("Background MCP requires connect_device(headless:true)".into());
             }
             return session::connect(args);
+        }
+        if name == "recover_processes" {
+            writable()?;
+            return process::recovery::call(args);
         }
         let id =
             SessionID::parse_str(string(args, "session")?).map_err(|_| "Invalid session UUID")?;
