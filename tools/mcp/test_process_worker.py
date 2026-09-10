@@ -97,6 +97,44 @@ class ProcessWorkerTest(unittest.TestCase):
             cancel=True)
         self.assertEqual(result["state"]["state"], "cancelled")
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows environment script")
+    def test_environment_script_and_direct_argv(self):
+        with tempfile.TemporaryDirectory(prefix="mcp setup space ") as directory:
+            script = Path(directory) / "setup environment.cmd"
+            script.write_text('@echo off\nset "MCP_SETUP_VALUE=from-script"\nset "MCP_SETUP_REMOVE=present"\n'
+                              'set "MCP_SETUP_ARGUMENT=%~1"\necho setup-output\nexit /b 0\n', encoding="ascii")
+            literal = 'spaces & percent% quote" caret^ 中文'
+            result = self.run_worker(
+                "import os,sys,json; print(json.dumps([os.environ.get('MCP_SETUP_VALUE'), "
+                "os.environ.get('MCP_SETUP_REMOVE'),os.environ.get('MCP_SETUP_ARGUMENT'),sys.argv[1]]))",
+                arguments=[literal], request_overrides={
+                    "environment_script": {"path": str(script), "args": ["x64 argument"]},
+                    "env": [{"name": "MCP_SETUP_VALUE", "value": "override"}],
+                    "unset_env": ["MCP_SETUP_REMOVE"]})
+            self.assertTrue(result["state"]["success"], result)
+            self.assertEqual(result["state"]["setup_exit_code"], 0)
+            self.assertEqual(json.loads(result["stdout"]), ["override", None, "x64 argument", literal])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows setup failure/timeout")
+    def test_environment_failure_and_timeout_never_launch_command(self):
+        with tempfile.TemporaryDirectory(prefix="mcp setup ") as directory:
+            script = Path(directory) / "fail.cmd"
+            for body, options, expected in [
+                ("@exit /b 7\n", {}, "failed"),
+                ("@ping -n 10 127.0.0.1 >nul\n", {"timeout_ms": 100}, "timed_out"),
+            ]:
+                script.write_text(body, encoding="ascii")
+                result = self.run_worker("print('must-not-start')", request_overrides={
+                    "environment_script": {"path": str(script), **options}})
+                self.assertEqual(result["state"]["state"], expected, result)
+                self.assertEqual(result["stdout"], b"")
+                self.assertNotIn("pid", result["state"])
+            script.write_text("@echo ready>started\n@ping -n 10 127.0.0.1 >nul\n", encoding="ascii")
+            result = self.run_worker("print('must-not-start')", cancel=True, request_overrides={
+                "environment_script": {"path": str(script)}})
+            self.assertEqual(result["state"]["state"], "cancelled", result)
+            self.assertEqual(result["stdout"], b"")
+
     def test_timeout_cleans_up_grandchild(self):
         child = ("import time,pathlib; pathlib.Path('started').write_text('ready'); "
                  "time.sleep(2); pathlib.Path('leaked').write_text('bad')")

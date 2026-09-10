@@ -76,6 +76,16 @@ Windows shell 示例（可执行文件路径需按目标实际安装核对）：
 
 `cmd.exe /c` 不遵循普通 C argv 引号规则，此入口使用 [`CommandExt::raw_arg`](https://doc.rust-lang.org/std/os/windows/process/trait.CommandExt.html) 传递明确的脚本文本。PowerShell 入口使用 UTF-16LE `-EncodedCommand`；保留 PowerShell 自身的退出码规则，脚本应显式传播外部程序的 `$LASTEXITCODE`。直接 argv 路径保持原行为。
 
+仅为载入 MSVC 环境时，可使用 `environment_script`，主程序继续直接传 argv：
+
+```json
+{"session":"<终端 UUID>","job_id":"build-vs-002","executable":"C:\\Program Files\\Python310\\python.exe","args":["-m","nuitka","app.py"],"cwd":"C:\\builds\\source","environment_script":{"path":"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat","timeout_ms":120000},"timeout_ms":7200000}
+```
+
+该参数也适用于 `run_workspace_process` 和构建矩阵命令。脚本继承当前授权终端用户环境及补全的 PATH；成功后捕获 UTF-16LE 环境到内存，再应用主命令的 `env/unset_env`，不会修改机器全局环境或跨任务缓存。路径必须是存在的绝对 `.bat/.cmd`，可带空格；可选 `args` 最多 32 项，CALL 易产生二次解析的引号、`%`、`!`、`^` 和控制字符明确拒绝，普通主程序 argv 没有新增此限制。无需依赖机器是否启用 8.3 短路径。
+
+初始化阶段显示 `phase:environment_setup`、`setup_pid`、心跳、`setup_exit_code/setup_success`，使用 `read_process_output(stream:setup)` 按字节读取原始初始化日志。初始化有独立时限，默认/最大 120 秒；主命令的 `timeout_ms` 仍从其实际启动时计算。初始化超时/取消会结束其 Job Object 子进程树，失败时不执行主程序；环境快照和初始化日志各限 1 MiB。日志可能包含脚本自己输出的敏感信息，但捕获的完整环境不会写入日志或状态。此接口只负责初始化，不会定位或安装 VS，也不会修改 Nuitka/SCons 包。
+
 工作区保存在命令存储目录的 `.workspaces` 子目录。worker 异常退出留下的租约不会自动抢占，以免两个构建写入同一目录。用 `get_workspace` 查看租约的任务 ID，先查明未知任务状态再人工恢复。
 
 ## 环境检查与依赖准备

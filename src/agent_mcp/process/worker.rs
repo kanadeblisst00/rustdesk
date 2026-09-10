@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn capture<R: Read + Send + 'static>(
+pub(super) fn capture<R: Read + Send + 'static>(
     mut reader: R,
     mut file: File,
     limit: u64,
@@ -125,6 +125,19 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
     }
     #[cfg(windows)]
     command.env("PATH", platform::process_path()?);
+    if spec.get("environment_script").is_some() {
+        #[cfg(windows)]
+        if !super::setup::initialize(dir, &spec, state, &mut command)? {
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        return Err("environment_script requires a Windows peer".into());
+        #[cfg(windows)]
+        if dir.join("cancel.json").exists() {
+            state["state"] = json!("cancelled");
+            return Ok(());
+        }
+    }
     if let Some(env) = spec["env"].as_array() {
         for entry in env {
             command.env(

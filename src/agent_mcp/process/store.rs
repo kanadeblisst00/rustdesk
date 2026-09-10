@@ -116,7 +116,7 @@ impl Store {
             state["state"] = json!("unknown");
             state["error"] = json!("Worker heartbeat is stale; outcome unknown. Inspect the remote machine; do not rerun automatically.");
         }
-        for stream in ["stdout", "stderr"] {
+        for stream in ["stdout", "stderr", "setup"] {
             let size = match fs::metadata(dir.join(format!("{stream}.log"))) {
                 Ok(meta) => meta.len(),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
@@ -126,6 +126,9 @@ impl Store {
         }
         state["log_paths"] =
             json!({"stdout":dir.join("stdout.log"),"stderr":dir.join("stderr.log")});
+        if dir.join("setup.log").exists() {
+            state["log_paths"]["setup"] = json!(dir.join("setup.log"));
+        }
         state["poll_after_ms"] = json!(if terminal(&state) { 0 } else { 1000 });
         if let Some(started) = state["started_at_ms"].as_u64() {
             let end = state["finished_at_ms"].as_u64().unwrap_or_else(now);
@@ -265,7 +268,7 @@ impl Store {
             }
             "read_process_output" => {
                 let stream = args["stream"].as_str().ok_or("Missing stream")?;
-                if !matches!(stream, "stdout" | "stderr") {
+                if !matches!(stream, "stdout" | "stderr" | "setup") {
                     return Err("Invalid stream".into());
                 }
                 let mut offset = args["offset"].as_u64().unwrap_or(0);
