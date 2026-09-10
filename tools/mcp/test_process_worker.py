@@ -80,11 +80,12 @@ class ProcessWorkerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="mcp shell space ") as directory:
             script = Path(directory) / "build environment.cmd"
             script.write_text("@echo off\necho quoted-path-ok\nexit /b 0\n", encoding="ascii")
-            result = self.run_worker("", request_overrides={
-                "executable": os.environ.get("COMSPEC", "cmd.exe"), "shell": "cmd",
-                "args": ['call "%s"' % script]})
-            self.assertTrue(result["state"]["success"], result)
-            self.assertIn(b"quoted-path-ok", result["stdout"])
+            for command in ['call "%s"' % script, 'echo >nul && call "%s"' % script]:
+                result = self.run_worker("", request_overrides={
+                    "executable": os.environ.get("COMSPEC", "cmd.exe"), "shell": "cmd",
+                    "args": [command]})
+                self.assertTrue(result["state"]["success"], result)
+                self.assertIn(b"quoted-path-ok", result["stdout"])
         result = self.run_worker("", request_overrides={
             "executable": "powershell.exe", "shell": "powershell",
             "args": ["Write-Output 'space and \"literal quote\"'; exit 7"]})
