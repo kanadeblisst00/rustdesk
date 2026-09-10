@@ -331,6 +331,7 @@ impl Store {
                 let next = offset + data.len() as u64;
                 let mut result =
                     super::output::decode(&data, args["encoding"].as_str().unwrap_or("auto"));
+                super::presentation::annotate(&mut result);
                 result["truncated_start"] = json!(truncated_start);
                 let fields = result.as_object_mut().ok_or("Invalid output metadata")?;
                 fields.extend(json!({"job_id":id,"stream":stream,"offset":offset,"next_offset":next,"data_base64":STANDARD.encode(&data),"complete":terminal(&state),"eof":terminal(&state) && next >= state[format!("{stream}_bytes")].as_u64().unwrap_or(0)}).as_object().ok_or("Invalid log metadata")?.clone());

@@ -7212,6 +7212,7 @@ dependencies = [
  "repng",
  "reqwest",
  "ringbuf",
+ "roxmltree",
  "rubato",
  "rust-pulsectl",
  "rustdesk-agent-mcp",

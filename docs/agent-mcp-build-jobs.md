@@ -41,6 +41,10 @@
 
 `env:[{"name":"HTTP_PROXY","value":""}]` 设置空字符串；`unset_env:["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY"]` 删除继承变量。不能在两处重复指定同一名称。Windows 保留授权身份的 PATH，并在末尾补齐实际系统目录、`WindowsPowerShell\v1.0` 和 `Wbem`；显式 `env`/`unset_env` 最后应用。
 
+日志读取与 `wait_for_process` 的每页输出还会识别 ANSI/PowerShell CLIXML，添加 `presentation`，原有 `text`、`data_base64` 和字节游标保持原样。`presentation.text` 清理完整的 ANSI CSI/OSC 序列；CLIXML 按记录的 `S` 属性区分 error/warning/progress 等流，过滤显示中的进度记录并保留错误及 XML 前后的普通 stderr。`records` 保留最多 16 条摘要，`progress_records_filtered` 返回过滤数量。可读文本最多 4096 字节、每条记录摘要最多 256 字节，超出时 `presentation.truncated:true`；完整内容仍在原始日志。未知序列化对象保留 XML，不实例化远端对象。
+
+CLIXML 解析要求该页包含完整文档；跨页、不合法 XML、DTD 或过多节点返回 `presentation.text:null` 和 `presentation.error`，调用方应保留原文、扩大读取窗口或拼接相邻原始字节后处理。编码有歧义时仍须显式选择生产工具的编码，不根据 XML 外观猜测中文代码页。参考 [PowerShell 输出流定义](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_output_streams)；进度流不等于错误流，命令成败仍以进程状态和退出码判断。
+
 `timeout_ms` 是整个命令的执行上限，并非单次 MCP 等待时间。`timed_out` 表示已终止进程树，已有 exe 或其他部分产物不把它变成成功。需要延长时，在超时前调用 `extend_process_timeout(job_id, timeout_ms)`，数值为从原开始时间计算的总时长；返回请求已保存后仍需查询有效 `timeout_ms`。新 worker 才支持该操作；已结束/未知任务不会被恢复或重跑。
 
 取消和超时清理 Unix 进程组或 Windows Job Object，包含通常的子孙进程。Unix 程序若主动脱离进程组、通过其他服务启动任务，其生命周期需由项目自身管理。worker 异常退出、重启机器或磁盘不可写可能只留下未知状态；不会自动重放命令。构建 worker 没有沙箱或权限提升能力，权限与已授权终端用户一致。

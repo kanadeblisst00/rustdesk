@@ -59,6 +59,31 @@ fn durable_idempotency_and_conflicting_retries() {
 }
 
 #[test]
+fn log_presentation_keeps_byte_cursors_and_fits_wait_wire_budget() {
+    use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+    let temp = Temp::new();
+    let store = temp.store();
+    store.create(&spec("xml"), |_| Ok(())).unwrap();
+    let dir = store.directory("xml").unwrap();
+    let bytes = b"#< CLIXML\n<Objs xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><S S=\"Error\">bad_x000D__x000A_</S></Objs>";
+    std::fs::write(dir.join("stderr.log"), bytes).unwrap();
+    let result = store.call("read_process_output", &json!({"job_id":"xml","stream":"stderr"})).unwrap();
+    assert_eq!(STANDARD.decode(result["data_base64"].as_str().unwrap()).unwrap(), bytes);
+    assert_eq!(result["next_offset"], bytes.len());
+    assert_eq!(result["presentation"]["text"], "bad\r\n");
+    let page = store.call("read_process_output", &json!({"job_id":"xml","stream":"stderr","max_bytes":20})).unwrap();
+    assert_eq!(page["next_offset"], 20);
+    assert!(page["presentation"]["text"].is_null());
+    let mut worst_case = vec![1u8; 32768];
+    worst_case[0] = 0x1b;
+    for stream in ["stdout", "stderr", "setup"] {
+        std::fs::write(dir.join(format!("{stream}.log")), &worst_case).unwrap();
+    }
+    let wait = store.call("wait_for_process", &json!({"job_id":"xml","timeout_ms":0,"max_bytes":32768})).unwrap();
+    assert!(serde_json::to_vec(&wait).unwrap().len() < model::MAX_WIRE_BYTES);
+}
+
+#[test]
 fn validates_paths_nul_and_environment() {
     for id in ["../x", "x/y", "x\\y", "点", ".", ""] {
         assert!(model::validate("run_process", &spec(id)).is_err());
