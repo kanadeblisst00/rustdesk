@@ -26,7 +26,7 @@ use_samplerate = ["samplerate"]
 use_rubato = ["rubato"]
 use_dasp = ["dasp"]
 flutter = ["flutter_rust_bridge"]
-mcp = ["flutter", "dep:rustdesk-agent-mcp"]
+mcp = ["flutter", "dep:rustdesk-agent-mcp", "dep:roxmltree"]
 mcp-isolated = ["mcp"]
 default = ["use_dasp"]
 hwcodec = ["scrap/hwcodec"]
@@ -58,6 +58,7 @@ hbb_common = { path = "libs/hbb_common", features = ["webrtc"] }
 serde_derive = "1.0"
 serde = "1.0"
 serde_json = "1.0"
+roxmltree = { version = "0.20", optional = true }
 serde_repr = "0.1"
 cfg-if = "1.0"
 lazy_static = "1.4"
