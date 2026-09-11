@@ -19,14 +19,14 @@
 
 | Artifact | 内容 |
 | --- | --- |
-| `rustdesk-mcp-windows-x64.exe` | Windows x64 自解压可执行文件；可直接运行或安装 |
+| `rustdesk-mcp-windows-x64-install.exe` | Windows x64 自解压安装程序；保留文件名并双击安装 |
 | `rustdesk-mcp-linux-x64` | Ubuntu 22.04 环境构建的 Debian 包和应用目录 TAR.GZ |
 | `rustdesk-mcp-linux-arm64` | Ubuntu 22.04 ARM64 环境构建的 Debian 包和应用目录 TAR.GZ |
 | `rustdesk-mcp-macos-x64` | Intel Mac 的 `.app.zip` |
 | `rustdesk-mcp-macos-arm64` | Apple Silicon 的 `.app.zip`，最低 macOS 12.3 |
 | `rustdesk-mcp-toolkit.zip` | MCP stdio 代理、服务器配置、使用说明及 `COMMIT.txt` |
 
-等待目标平台任务成功后，在该次运行的 **Summary → Artifacts** 下载对应应用和独立的 MCP 工具包。Windows 使用 RustDesk 自带的 portable packer，将 Flutter 应用目录嵌入一个可直接运行或安装的自解压 EXE；MCP 工具包只生成一次，避免在每个平台产物中重复。`mcp-bridge` 只是构建中间文件。最终产物保留 14 天，可通过再次运行重新构建。
+等待目标平台任务成功后，在该次运行的 **Summary → Artifacts** 下载对应应用和独立的 MCP 工具包。Windows 使用 RustDesk 自带的 portable packer，将 Flutter 应用目录嵌入自解压 EXE；其文件名必须以 `install.exe` 结尾，双击后才会进入安装流程并注册 `RustDeskMCP` 服务，请勿在运行前重命名。移除该后缀会改为便携模式，不应与已安装版本同时运行。MCP 工具包只生成一次，避免在每个平台产物中重复。`mcp-bridge` 只是构建中间文件。最终产物保留 14 天，可通过再次运行重新构建。
 
 这些是未进行发行签名/公证的测试包，不是正式签名安装器。Windows 包不附带上游发布流程额外下载的虚拟显示器和打印机驱动，也未启用 `vram`。Linux x64 与 ARM64 运行仍需要系统图形/音频等依赖，不保证兼容比 Ubuntu 22.04 更老的发行版；ARM64 使用项目上游采用的 `flutter-elinux` 构建路径。macOS 首次打开可能需要按系统提示允许该应用；不要全局关闭系统安全保护。安装后仍需手动启用 MCP 服务并配置授权。
 
