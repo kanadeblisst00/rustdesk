@@ -56,6 +56,15 @@ class BuildFlagTest(unittest.TestCase):
                 self.assertEqual(flutter.called, mcp)
                 self.assertEqual(verify.called, mcp)
 
+    def test_windows_mcp_artifact_preserves_click_install_suffix(self):
+        workflow = (ROOT / '.github/workflows/agent-mcp-build.yml').read_text()
+        artifact = 'dist/rustdesk-mcp-windows-x64-install.exe'
+        self.assertEqual(workflow.count(artifact), 2)
+        self.assertNotIn('dist/rustdesk-mcp-windows-x64.exe', workflow)
+
+        portable = (ROOT / 'libs/portable/src/main.rs').read_text()
+        self.assertIn('arg_exe.to_lowercase().ends_with("install.exe")', portable)
+
     def test_mcp_rejects_packaging_paths_that_would_overwrite_stock(self):
         for flags in [['--drm'], ['--package', 'bundle']]:
             args = build.make_parser().parse_args(['--flutter', '--mcp'] + flags)
