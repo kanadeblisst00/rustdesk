@@ -138,10 +138,21 @@ class ProcessWorkerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="mcp-invalid-exe-") as directory:
             executable = Path(directory) / "invalid.exe"
             executable.write_bytes(b"This is not a PE executable")
+            # Probe this Windows loader instead of assuming every runner returns 193.
+            with self.assertRaises(OSError) as native_error:
+                subprocess.run([str(executable), "-c", ""], executable=str(executable), stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
+                               creationflags=0x08000004)  # CREATE_NO_WINDOW | CREATE_SUSPENDED
+            expected_error = native_error.exception.winerror
+            self.assertIn(expected_error, (193, 216))  # Bad format or machine type mismatch.
             result = self.run_worker("", request_overrides={"executable": str(executable)})
+        self.assertEqual(result["state"]["state"], "failed")
+        self.assertEqual(result["state"]["failure_stage"], "command_start")
         self.assertEqual(result["state"]["failure"]["operation"], "CreateProcessW")
-        self.assertEqual(result["state"]["failure"]["win32_error"], 193)
+        self.assertEqual(result["state"]["failure"]["win32_error"], expected_error)
+        self.assertEqual(result["state"]["failure"]["os_error"], expected_error)
         self.assertIsNone(result["state"]["exit_code"])
+        self.assertFalse(result["state"]["termination_requested"])
 
     @unittest.skipUnless(sys.platform == "win32", "Windows unsigned exit status")
     def test_windows_access_denied_exit_code_is_preserved(self):

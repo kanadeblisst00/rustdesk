@@ -87,5 +87,39 @@ class WorkerHarnessTest(unittest.TestCase):
         self.process.wait.assert_called_once_with(timeout=5)
 
 
+class InvalidExecutableDiagnosticsTest(unittest.TestCase):
+    def check_diagnostics(self, native_code, reported_code, **state_overrides):
+        native_error = OSError('Windows rejected the executable')
+        native_error.winerror = native_code
+        state = {'state': 'failed', 'failure_stage': 'command_start',
+                 'failure': {'operation': 'CreateProcessW', 'win32_error': reported_code,
+                             'os_error': reported_code},
+                 'exit_code': None, 'termination_requested': False, **state_overrides}
+        case = worker.ProcessWorkerTest()
+        with patch.object(worker.subprocess, 'run', side_effect=native_error), \
+                patch.object(case, 'run_worker', return_value={'state': state}):
+            # Exercise the Windows assertions on every host without starting a Windows process.
+            method = worker.ProcessWorkerTest.test_windows_invalid_executable_is_not_a_compiler_exit
+            getattr(method, '__wrapped__', method)(case)
+
+    def test_preserves_each_native_loader_error(self):
+        for code in (193, 216):
+            with self.subTest(code=code):
+                self.check_diagnostics(code, code)
+
+    def test_rejects_rewritten_or_unrelated_loader_errors(self):
+        for native_code, reported_code in ((216, 193), (193, 216), (5, 5)):
+            with self.subTest(native_code=native_code, reported_code=reported_code):
+                with self.assertRaises(AssertionError):
+                    self.check_diagnostics(native_code, reported_code)
+
+    def test_startup_failure_cannot_masquerade_as_a_process_exit(self):
+        for override in ({'state': 'exited'}, {'failure_stage': 'command_run'},
+                         {'exit_code': 216}, {'termination_requested': True}):
+            with self.subTest(override=override):
+                with self.assertRaises(AssertionError):
+                    self.check_diagnostics(216, 216, **override)
+
+
 if __name__ == '__main__':
     unittest.main()
