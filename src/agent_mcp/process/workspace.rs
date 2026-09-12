@@ -252,7 +252,7 @@ pub(super) fn call(
     store: &Store,
     operation: &str,
     args: &Value,
-    launch: impl FnOnce(&Path) -> Result<(), String>,
+    launch: impl FnOnce(&Path) -> Result<(), super::diagnostics::Failure>,
 ) -> Result<Value, String> {
     let id = args["workspace_id"]
         .as_str()

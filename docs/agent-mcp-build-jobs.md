@@ -213,3 +213,19 @@ macOS 系统服务是独立的 `service` 程序，不能只在 Flutter 的 `core
 矩阵运行器新增独立的 tools/mcp/build_matrix.py、示例清单和回归测试；不改变现有桌面操作工具。测试覆盖并发、单机失败隔离、结果不确定时恢复原任务、日志字节续读、已删除任务拒绝重建、Git 版本不符、原样传参、凭据不写报告、产物下载校验和失败截图。原生 worker 的孙进程测试增加已启动标记，避免尚未启动孙进程就超时导致假通过。构建 workflow 只增加 toolkit 内容和构建产物的 worker 验证步骤；其他编译/打包步骤保持原样。该测试不建立 RustDesk 远程连接；Windows/Linux 真实远程认证、GUI 驱动与文件下载仍需部署后联调。
 
 环境预检收尾修复只改 process/environment.rs 的磁盘路径选择：任务目录尚不存在时查询已有父目录，不创建目录；测试确认成功/失败探测均不创建存储目录。清单校验同步约束可发现工具的简单文件名，避免本地校验通过后被远端拒绝。该变化不影响真正创建任务时的私有目录检查。
+
+
+## 长任务结束原因与启动诊断
+
+`run_process` 本身就是持久后台任务；不要用立即退出的父命令包裹 `Popen` 或 `start` 来代替它。父命令结束后，worker 按既有规则清理它的子进程树。编译主命令应直接交给 `run_process`，保留 `job_id`，使用 `wait_for_process` 增量等待，断线后使用 `recover_processes` 恢复观察。进程 worker 退出、系统关机和外层 OS 作业限制不属于“远程连接断开后继续”的保证。
+
+新 worker 的状态增加以下可选字段，旧记录可能没有这些字段：
+
+- `phase`、`failure_stage`：准备、环境初始化、主程序启动、日志收集、命令执行、日志排空或清理阶段。失败时保留失败发生阶段。
+- `failure.operation/message/os_error`：启动 API 与原始错误。Windows API 还保留 `hresult` 和可提取的 `win32_error`；例如 `AssignProcessToJobObject` 的拒绝访问与程序自行退出是两类不同结果。
+- `exit_code_hex`：Windows 退出码的完整 32 位十六进制表示。没有创建主进程时 `exit_code` 仍为 null；已创建但尚未恢复执行的进程在启动清理后可能有退出码，此时 `state:failed` 和 `failure_stage:command_start` 仍表示启动失败。
+- `termination_requested/reason`：是否请求终止主命令或初始化进程及其原因；正常主进程退出为 `false/process_exit`，但仍按原规则清理剩余子进程。取消、执行超时和显式日志超限分别记录自己的原因；不把主动终止的返回码误判成编译器错误。
+- `process_tree_cleanup`、`cleanup_error`、`exit_status_error`：主任务清理与退出状态查询的结果。即使日志排空失败，也先保存能够取得的真实退出状态。Windows 初始化另有 `setup_tree_cleanup/setup_exit_code/setup_finished_at_ms`。
+- `worker_pid`、`execution_identity`、`total_elapsed_ms`：worker、运行身份观察和包含启动阶段的总耗时。Windows 身份观察来自 worker 环境，不是完整令牌/权限审计；不改变授权终端身份、不提权。任意用户名、SYSTEM 或管理员运行选项未加入。
+
+`state`、`success`、`exit_code` 与初始化脚本的 `setup_exit_code/setup_success` 分开读取。保留日志仍通过 `read_process_output(tail_lines:...)` 或 `recover_processes(job_id:...)` 获取，不把大量日志重复放进状态响应；超出日志保存限额的字节无法恢复。

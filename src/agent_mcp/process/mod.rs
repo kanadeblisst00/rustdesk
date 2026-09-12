@@ -1,3 +1,4 @@
+mod diagnostics;
 mod environment;
 mod output;
 mod presentation;

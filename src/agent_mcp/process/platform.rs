@@ -39,7 +39,7 @@ impl Identity {
     pub fn root(&self) -> Result<std::path::PathBuf, String> {
         Ok(hbb_common::config::Config::get_home().join(".rustdesk-mcp-jobs"))
     }
-    pub fn launch(&self, dir: &std::path::Path) -> Result<(), String> {
+    pub fn launch(&self, dir: &std::path::Path) -> Result<(), super::diagnostics::Failure> {
         use std::os::unix::process::CommandExt;
         let mut command =
             std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
@@ -65,7 +65,7 @@ impl Identity {
                 let mut child = match command.spawn() {
                     Ok(child) => child,
                     Err(e) => {
-                        if let Err(e) = tx.send(Err(e.to_string())) {
+                        if let Err(e) = tx.send(Err(super::diagnostics::Failure::io("spawn_worker", e))) {
                             hbb_common::log::debug!("Worker launch reply: {e}");
                         }
                         return;
@@ -90,11 +90,11 @@ pub(super) struct Child {
 }
 #[cfg(unix)]
 impl Child {
-    pub fn spawn(command: &mut std::process::Command) -> Result<Self, String> {
+    pub fn spawn(command: &mut std::process::Command) -> Result<Self, super::diagnostics::Failure> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
         Ok(Self {
-            process: command.spawn().map_err(|e| e.to_string())?,
+            process: command.spawn().map_err(|e| super::diagnostics::Failure::io("spawn", e))?,
             stopped: false,
         })
     }

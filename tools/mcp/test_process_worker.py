@@ -14,7 +14,7 @@ EXECUTABLE = os.environ.get("RUSTDESK_MCP_TEST_EXECUTABLE")
 
 @unittest.skipUnless(EXECUTABLE, "set RUSTDESK_MCP_TEST_EXECUTABLE to a built MCP executable")
 class ProcessWorkerTest(unittest.TestCase):
-    def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False, descendant=False, request_overrides=None):
+    def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False, descendant=False, request_overrides=None, close_transport=False):
         with tempfile.TemporaryDirectory(prefix="mcp-worker-") as directory:
             root = Path(directory)
             job = root / "job"
@@ -27,23 +27,31 @@ class ProcessWorkerTest(unittest.TestCase):
             (job / "state.json").write_text(json.dumps({
                 "job_id": "entry-test", "state": "starting", "exit_code": None,
                 "updated_at_ms": int(time.time() * 1000)}), encoding="utf-8")
+            stdio = subprocess.PIPE if close_transport else subprocess.DEVNULL
             process = subprocess.Popen([EXECUTABLE, "--mcp-process-worker", str(job)],
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL)
+                                       stdin=stdio, stdout=stdio, stderr=stdio)
             try:
                 deadline = time.monotonic() + 30
                 cancellation_sent = False
+                transport_closed = False
                 while time.monotonic() < deadline:
                     if process.poll() is not None:
                         break
                     if cancel and (root / "started").is_file() and not cancellation_sent:
                         (job / "cancel.json").write_text("{}", encoding="utf-8")
                         cancellation_sent = True
+                    if close_transport and (root / "started").is_file() and not transport_closed:
+                        for stream in (process.stdin, process.stdout, process.stderr):
+                            stream.close()
+                        transport_closed = True
+                        (root / "transport_closed").write_text("ready", encoding="utf-8")
                     time.sleep(0.02)
                 else:
                     self.fail("Built executable did not complete its worker entry point")
                 process.wait(timeout=5)
                 self.assertEqual(process.returncode, 0, "Worker exited unsuccessfully")
+                if close_transport:
+                    self.assertTrue(transport_closed, "Worker did not reach the disconnection barrier")
                 # Python's Windows file handles conflict with the worker's state replacement.
                 state = json.loads((job / "state.json").read_text(encoding="utf-8"))
                 result = {"state": state, "stdout": (job / "stdout.log").read_bytes(),
@@ -54,6 +62,9 @@ class ProcessWorkerTest(unittest.TestCase):
                     self.assertFalse((root / "leaked").exists(), "Grandchild survived task cleanup")
                 return result
             finally:
+                if close_transport:
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        stream.close()
                 if process.poll() is None:
                     process.kill()
                     process.wait(timeout=5)
@@ -67,6 +78,18 @@ class ProcessWorkerTest(unittest.TestCase):
         self.assertFalse(result["state"]["success"])
         self.assertEqual(result["stdout"].decode("utf-8"), "中文 $(literal)")
         self.assertEqual(result["stderr"], b"error-stream")
+
+    def test_worker_and_child_outlive_closed_launcher_stdio(self):
+        child = ("import pathlib,time; pathlib.Path('started').write_text('ready'); "
+                 "\nwhile not pathlib.Path('transport_closed').exists(): time.sleep(0.02)\n"
+                 "time.sleep(0.5); print('child-after-disconnect')")
+        result = self.run_worker(
+            "import subprocess,sys; sys.exit(subprocess.call([sys.executable,'-c',%r]))" % child,
+            close_transport=True)
+        self.assertTrue(result["state"]["success"], result)
+        self.assertEqual(result["stdout"].strip(), b"child-after-disconnect")
+        self.assertEqual(result["state"]["termination_reason"], "process_exit")
+        self.assertFalse(result["state"]["termination_requested"])
 
     def test_empty_environment_and_removal_reach_the_real_worker(self):
         result = self.run_worker(
@@ -97,6 +120,37 @@ class ProcessWorkerTest(unittest.TestCase):
             "import time,pathlib; pathlib.Path('started').write_text('ready'); time.sleep(60)",
             cancel=True)
         self.assertEqual(result["state"]["state"], "cancelled")
+        self.assertTrue(result["state"]["termination_requested"])
+        self.assertEqual(result["state"]["termination_reason"], "cancelled")
+        self.assertIsNotNone(result["state"]["exit_code"] if sys.platform == "win32" else result["state"]["signal"])
+
+    def test_spawn_failure_preserves_os_error_and_stage(self):
+        result = self.run_worker("", request_overrides={
+            "executable": str(Path(tempfile.gettempdir()) / "missing-mcp-command-no-such-executable")})
+        self.assertEqual(result["state"]["state"], "failed")
+        self.assertEqual(result["state"]["failure_stage"], "command_start")
+        self.assertIsNotNone(result["state"]["failure"]["os_error"])
+        self.assertIsNone(result["state"]["exit_code"])
+        self.assertFalse(result["state"]["termination_requested"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows process creation diagnostics")
+    def test_windows_invalid_executable_is_not_a_compiler_exit(self):
+        with tempfile.TemporaryDirectory(prefix="mcp-invalid-exe-") as directory:
+            executable = Path(directory) / "invalid.exe"
+            executable.write_bytes(b"This is not a PE executable")
+            result = self.run_worker("", request_overrides={"executable": str(executable)})
+        self.assertEqual(result["state"]["failure"]["operation"], "CreateProcessW")
+        self.assertEqual(result["state"]["failure"]["win32_error"], 193)
+        self.assertIsNone(result["state"]["exit_code"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows unsigned exit status")
+    def test_windows_access_denied_exit_code_is_preserved(self):
+        result = self.run_worker("import ctypes; ctypes.windll.kernel32.ExitProcess(0x80070005)")
+        self.assertEqual(result["state"]["state"], "exited")
+        self.assertEqual(result["state"]["exit_code_hex"], "0x80070005")
+        self.assertEqual(result["state"]["termination_reason"], "process_exit")
+        self.assertFalse(result["state"]["termination_requested"])
+        self.assertNotIn("failure_stage", result["state"])
 
     def test_log_truncation_preserves_exit_code_and_drains_both_pipes(self):
         for code in (0, 7):
@@ -129,6 +183,8 @@ class ProcessWorkerTest(unittest.TestCase):
             timeout=1000, request_overrides={"max_log_bytes": 1024})
         self.assertEqual(result["state"]["state"], "timed_out", result)
         self.assertTrue(result["state"]["logs_truncated"])
+        self.assertEqual(result["state"]["termination_reason"], "timed_out")
+        self.assertTrue(result["state"]["termination_requested"])
 
     def test_failed_parent_also_cleans_up_grandchild(self):
         child = ("import time,pathlib; pathlib.Path('started').write_text('ready'); "

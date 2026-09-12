@@ -1,3 +1,4 @@
+use super::super::diagnostics::Failure;
 use std::{
     ffi::OsStr,
     os::windows::{ffi::OsStrExt, io::AsRawHandle},
@@ -232,7 +233,7 @@ impl Identity {
         }
         Ok(PathBuf::from(path?).join("RustDeskMCP").join("jobs"))
     }
-    pub fn launch(&self, dir: &Path) -> Result<(), String> {
+    pub fn launch(&self, dir: &Path) -> Result<(), Failure> {
         use std::os::windows::process::CommandExt;
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let Some(token) = self.token else {
@@ -251,7 +252,7 @@ impl Identity {
                     let mut child = match command.spawn() {
                         Ok(child) => child,
                         Err(e) => {
-                            if let Err(e) = tx.send(Err(e.to_string())) {
+                            if let Err(e) = tx.send(Err(Failure::io("CreateProcessW(worker)", e))) {
                                 hbb_common::log::debug!("Worker launch reply: {e}");
                             }
                             return;
@@ -283,7 +284,7 @@ impl Identity {
         let executable = wide(exe.as_os_str());
         let mut environment = std::ptr::null_mut();
         unsafe { CreateEnvironmentBlock(&mut environment, Some(HANDLE(token as _)), false) }
-            .map_err(|e| format!("Load authorized user's environment: {e}"))?;
+            .map_err(|e| Failure::windows("CreateEnvironmentBlock(worker)", e))?;
         let mut startup = STARTUPINFOW {
             cb: std::mem::size_of::<STARTUPINFOW>() as u32,
             ..Default::default()
@@ -309,7 +310,7 @@ impl Identity {
         if let Err(e) = unsafe { DestroyEnvironmentBlock(environment) } {
             hbb_common::log::warn!("Destroy user environment: {e}");
         }
-        result.map_err(|e| format!("Launch worker as authorized user: {e}"))?;
+        result.map_err(|e| Failure::windows("CreateProcessAsUserW(worker)", e))?;
         let _process = Handle(process.hProcess);
         let _thread = Handle(process.hThread);
         Ok(())
@@ -338,10 +339,10 @@ pub(in super::super) struct Child {
     stopped: bool,
 }
 impl Child {
-    pub fn spawn(command: &mut std::process::Command) -> Result<Self, String> {
+    pub fn spawn(command: &mut std::process::Command) -> Result<Self, Failure> {
         use std::os::windows::process::CommandExt;
         let job =
-            Handle(unsafe { CreateJobObjectW(None, PCWSTR::null()) }.map_err(|e| e.to_string())?);
+            Handle(unsafe { CreateJobObjectW(None, PCWSTR::null()) }.map_err(|e| Failure::windows("CreateJobObjectW", e))?);
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         unsafe {
@@ -352,11 +353,11 @@ impl Child {
                 std::mem::size_of_val(&limits) as u32,
             )
         }
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Failure::windows("SetInformationJobObject", e))?;
         let process = command
             .creation_flags(CREATE_SUSPENDED.0 | CREATE_NO_WINDOW.0)
             .spawn()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| Failure::io("CreateProcessW", e))?;
         let mut child = Self {
             process,
             job,
@@ -364,40 +365,35 @@ impl Child {
         };
         let setup = (|| {
             unsafe { AssignProcessToJobObject(child.job.0, HANDLE(child.process.as_raw_handle())) }
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| Failure::windows("AssignProcessToJobObject", e))?;
             // The initial thread has not run: attach the process tree before resuming it.
             let snapshot = Handle(
                 unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }
-                    .map_err(|e| e.to_string())?,
+                    .map_err(|e| Failure::windows("CreateToolhelp32Snapshot", e))?,
             );
             let mut entry = THREADENTRY32 {
                 dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
                 ..Default::default()
             };
-            unsafe { Thread32First(snapshot.0, &mut entry) }.map_err(|e| e.to_string())?;
+            unsafe { Thread32First(snapshot.0, &mut entry) }.map_err(|e| Failure::windows("Thread32First", e))?;
             loop {
                 if entry.th32OwnerProcessID == child.process.id() {
                     let thread = Handle(
                         unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) }
-                            .map_err(|e| e.to_string())?,
+                            .map_err(|e| Failure::windows("OpenThread", e))?,
                     );
                     if unsafe { ResumeThread(thread.0) } == u32::MAX {
-                        return Err(std::io::Error::last_os_error().to_string());
+                        return Err(Failure::io("ResumeThread", std::io::Error::last_os_error()));
                     }
                     return Ok(());
                 }
-                if unsafe { Thread32Next(snapshot.0, &mut entry) }.is_err() {
-                    return Err("Suspended command thread not found".into());
+                if let Err(error) = unsafe { Thread32Next(snapshot.0, &mut entry) } {
+                    return Err(Failure::windows("Thread32Next", error));
                 }
             }
         })();
         if let Err(e) = setup {
-            child
-                .process
-                .kill()
-                .map_err(|kill| format!("{e}; terminate suspended command: {kill}"))?;
-            child.stop()?;
-            return Err(e);
+            return Err(e.child(&mut child.process));
         }
         Ok(child)
     }

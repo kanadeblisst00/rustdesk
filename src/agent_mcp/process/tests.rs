@@ -542,6 +542,10 @@ fn timeout_cancel_and_log_limit_are_distinct() {
         worker.join().unwrap().unwrap();
         let state = store.status(id).unwrap();
         assert_eq!(state["state"], expected, "{state}");
+        assert_eq!(state["termination_requested"], true);
+        assert_eq!(state["termination_reason"], expected);
+        assert!(state["signal"].as_i64().is_some());
+        assert_eq!(state["process_tree_cleanup"], "succeeded");
         assert!(state["stdout_bytes"].as_u64().unwrap() <= limit);
         assert!(started.elapsed() < Duration::from_secs(5));
     }
@@ -816,4 +820,37 @@ fn process_wait_observes_completion_after_store_recreation() {
         assert!(start.elapsed() < Duration::from_secs(5));
     }
     running.join().unwrap().unwrap();
+}
+
+#[test]
+fn worker_launch_failure_is_durable_and_never_replayed() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let result = store.create(&spec("denied"), |_| {
+        Err(super::diagnostics::Failure::io("spawn_worker", std::io::Error::from_raw_os_error(13)))
+    }).unwrap();
+    assert_eq!(result["failure_stage"], "worker_launch");
+    assert_eq!(result["failure"]["operation"], "spawn_worker");
+    assert_eq!(result["failure"]["os_error"], 13);
+    assert_eq!(result["termination_requested"], false);
+    assert!(result["exit_code"].is_null());
+    let recovered = temp.store().create(&spec("denied"), |_| panic!("must not replay")).unwrap();
+    assert_eq!(recovered["failure"], result["failure"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn spawn_failure_keeps_os_code_without_inventing_an_exit_code() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let mut request = shell_spec("missing", "exit 0");
+    request["executable"] = json!(temp.0.join("does-not-exist"));
+    store.create(&request, |_| Ok(())).unwrap();
+    worker::run(&store.directory("missing").unwrap()).unwrap();
+    let result = store.status("missing").unwrap();
+    assert_eq!(result["state"], "failed");
+    assert_eq!(result["failure_stage"], "command_start");
+    assert_eq!(result["failure"]["os_error"], hbb_common::libc::ENOENT);
+    assert!(result["exit_code"].is_null());
+    assert_eq!(result["termination_requested"], false);
 }
