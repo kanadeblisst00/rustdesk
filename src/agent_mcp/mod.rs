@@ -10,6 +10,7 @@ pub(crate) mod identity;
 #[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
 pub(crate) mod isolated;
 mod session;
+pub(crate) mod terminal;
 mod automation;
 pub(crate) mod remote;
 mod wire;
@@ -52,7 +53,7 @@ pub(super) struct SessionState {
     frame: Mutex<Option<desktop::Frame>>,
     requested_display: Mutex<Option<usize>>,
     clipboard: Mutex<Option<String>>,
-    terminals: Mutex<HashMap<i32, (bool, ByteLog)>>,
+    terminals: Mutex<HashMap<i32, terminal::Terminal>>,
     jobs: Mutex<HashSet<i32>>,
     overwrites: Mutex<HashMap<(i32, i32), bool>>,
     directory: Mutex<Option<Value>>,
@@ -224,6 +225,7 @@ impl Backend for DesktopBackend {
                 "windows":{"list":true,"foreground":true,"focus":true,"platform":"Windows","requires_upgraded_peer":true,"activation_may_be_denied":true},
                 "actions":{"delivery":"queued_to_rustdesk_transport","remote_acknowledged":false,"max_batch_actions":20,"max_delay_ms":10000,"screenshot_after":true,"foreground_observation_guard":true,"max_waiting_calls":8,"queue_timeout_ms":10000},
                 "camera":false,"host_skills":false,"max_sessions":16,"max_events":256,
+                "terminal_details":{"open_ack_wait_ms":3000,"max_open_ack_wait_ms":10000,"reopen_same_id":true,"output_generation":true},
                 "max_terminal_bytes":1048576,"max_frame_bytes":67108864,
                 "device_allowlist":LocalConfig::get_option("agent-mcp-devices"),
                 "read_only":LocalConfig::get_option("agent-mcp-read-only")=="Y"}),
@@ -272,6 +274,7 @@ impl Backend for DesktopBackend {
             return desktop::screenshot(id, &s, &state, args);
         }
         if name == "terminal_output" {
+            if session::ready(&s).is_err() { terminal::reconnected(&state); }
             return session::terminal_output(&state, args);
         }
         if rustdesk_agent_mcp::process::is_tool(name) {
@@ -389,7 +392,7 @@ pub fn event(id: SessionID, name: &str, data: &impl serde::Serialize) {
         state.pending_screenshot.lock().unwrap().take();
         state.clipboard.lock().unwrap().take();
         state.directory.lock().unwrap().take();
-        state.terminals.lock().unwrap().clear();
+        terminal::reconnected(&state);
         state.jobs.lock().unwrap().clear();
         state.overwrites.lock().unwrap().clear();
         state.automation.reset();
@@ -421,36 +424,10 @@ pub fn event(id: SessionID, name: &str, data: &impl serde::Serialize) {
         }
     }
     if name == "terminal_response" {
-        use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
-        let Some(id) = data
-            .get("terminal_id")
-            .and_then(Value::as_i64)
-            .map(|v| v as i32)
-        else {
+        terminal::response(&state, &data);
+        if data["type"] == "data" {
+            state.events.push(name, json!({"type":"data","terminal_id":data["terminal_id"]}));
             return;
-        };
-        let mut terminals = state.terminals.lock().unwrap();
-        if terminals.len() >= 16 && !terminals.contains_key(&id) {
-            return;
-        }
-        let entry = terminals.entry(id).or_default();
-        match data.get("type").and_then(Value::as_str) {
-            Some("opened") => entry.0 = data.get("success") == Some(&Value::Bool(true)),
-            Some("closed" | "error") => entry.0 = false,
-            Some("data") => {
-                if let Some(encoded) = data.get("data").and_then(Value::as_str) {
-                    match STANDARD.decode(encoded) {
-                        Ok(bytes) => entry.1.append(&bytes),
-                        Err(e) => log::warn!("MCP terminal frame: {e}"),
-                    }
-                }
-                // Large terminal payloads live only in the byte log, not duplicated in the event ring.
-                state
-                    .events
-                    .push(name, json!({"type":"data","terminal_id":id}));
-                return;
-            }
-            _ => {}
         }
     }
     if data.to_string().len() <= 65536 {
