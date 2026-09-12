@@ -77,11 +77,19 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
     if store::terminal(&state) {
         return Err("Job is already terminal".into());
     }
+    state["worker_pid"] = json!(std::process::id());
+    state["phase"] = json!("prepare");
+    state["termination_requested"] = json!(false);
+    match platform::Identity::new(None).and_then(|identity| identity.environment()) {
+        Ok((_, identity)) => state["execution_identity"] = identity,
+        Err(error) => state["identity_error"] = json!(error),
+    }
     let result = execute(dir, &mut state);
     if let Err(error) = result {
         state["state"] = json!("failed");
         state["error"] = json!(error);
     }
+    super::diagnostics::finish(&mut state);
     if state["state"] != "exited" {
         state["success"] = json!(false);
     }
@@ -126,6 +134,7 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
     #[cfg(windows)]
     command.env("PATH", platform::process_path()?);
     if spec.get("environment_script").is_some() {
+        state["phase"] = json!("environment_setup");
         #[cfg(windows)]
         if !super::setup::initialize(dir, &spec, state, &mut command)? {
             return Ok(());
@@ -151,7 +160,16 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
             command.env_remove(name.as_str().ok_or("Invalid environment name")?);
         }
     }
-    let mut child = platform::Child::spawn(&mut command).map_err(|error| format!("Start remote executable {} in cwd {}: {error}; verify the executable path, working directory and PATH with get_environment", spec["executable"], spec["cwd"]))?;
+    state["phase"] = json!("command_start");
+    let mut child = platform::Child::spawn(&mut command).map_err(|error| {
+        let error = error.record(state);
+        format!("Start remote executable {} in cwd {}: {error}; verify the executable path, working directory and PATH with get_environment", spec["executable"], spec["cwd"])
+    })?;
+    state["pid"] = json!(child.process.id());
+    state["phase"] = json!("log_capture");
+    // Until collectors are ready, any error unwinds through Child's tree cleanup.
+    state["termination_requested"] = json!(true);
+    state["termination_reason"] = json!("worker_failure");
     let output = platform::Reader::new(child.process.stdout.take().ok_or("Missing stdout pipe")?)?;
     let errors = platform::Reader::new(child.process.stderr.take().ok_or("Missing stderr pipe")?)?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -185,10 +203,13 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
             return Err(e.to_string());
         }
     };
+    state["termination_requested"] = json!(false);
+    state["termination_reason"] = serde_json::Value::Null;
     let started = Instant::now();
     let mut timeout = Duration::from_millis(spec["timeout_ms"].as_u64().unwrap_or(3_600_000));
     state["timeout_ms"] = json!(timeout.as_millis() as u64);
     state["timeout_policy"] = json!("terminate_process_tree");
+    state["phase"] = json!("command");
     state["state"] = json!("running");
     state["started_at_ms"] = json!(store::now());
     state["pid"] = json!(child.process.id());
@@ -215,14 +236,10 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
                 heartbeat = Instant::now();
             }
             if let Some(status) = child.process.try_wait().map_err(|e| e.to_string())? {
+                state["termination_reason"] = json!("process_exit");
                 state["state"] = json!("exited");
-                state["exit_code"] = json!(status.code());
+                super::diagnostics::exit_status(state, status);
                 state["success"] = json!(status.success());
-                #[cfg(unix)]
-                {
-                    use std::os::unix::process::ExitStatusExt;
-                    state["signal"] = json!(status.signal());
-                }
                 break;
             }
             let reason = if dir.join("cancel.json").exists() {
@@ -235,6 +252,8 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
                 None
             };
             if let Some(reason) = reason {
+                state["termination_reason"] = json!(reason);
+                state["termination_requested"] = json!(true);
                 state["state"] = json!(reason);
                 break;
             }
@@ -245,23 +264,36 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
         }
         Ok::<_, String>(())
     })();
+    if monitor.is_err() {
+        state["termination_reason"] = json!("worker_failure");
+        state["termination_requested"] = json!(true);
+    }
     let cleanup = child.stop();
+    state["process_tree_cleanup"] = json!(if cleanup.is_ok() { "succeeded" } else { "failed" });
+    if let Err(error) = &cleanup {
+        state["cleanup_error"] = json!(error);
+    }
+    match child.process.try_wait() {
+        Ok(Some(status)) => super::diagnostics::exit_status(state, status),
+        Ok(None) => {}
+        Err(error) => state["exit_status_error"] = json!(error.to_string()),
+    }
     stop.store(true, Ordering::SeqCst);
     let out_result = out.join().map_err(|_| "stdout collector panicked");
     let err_result = err.join().map_err(|_| "stderr collector panicked");
     state["logs_truncated"] = json!(exceeded.load(Ordering::SeqCst));
+    if let Err(error) = &monitor { state["monitor_error"] = json!(error); }
+    state["phase"] = json!("log_drain");
     out_result??;
     err_result??;
+    state["phase"] = json!("command");
     monitor?;
+    state["phase"] = json!("cleanup");
     cleanup?;
     if state["state"] != "exited" {
         let status = child.process.wait().map_err(|e| e.to_string())?;
-        state["exit_code"] = json!(status.code());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::ExitStatusExt;
-            state["signal"] = json!(status.signal());
-        }
+        super::diagnostics::exit_status(state, status);
     }
+    state["phase"] = json!("completed");
     Ok(())
 }

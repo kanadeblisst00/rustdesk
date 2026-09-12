@@ -86,7 +86,10 @@ pub(super) fn initialize(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let log = File::create(dir.join("setup.log")).map_err(|e| e.to_string())?;
-    let mut child = platform::Child::spawn(&mut command)?;
+    let mut child = platform::Child::spawn(&mut command).map_err(|error| error.record(state))?;
+    state["setup_pid"] = json!(child.process.id());
+    state["termination_requested"] = json!(true);
+    state["termination_reason"] = json!("worker_failure");
     let mut output =
         platform::Reader::new(child.process.stdout.take().ok_or("Missing setup stdout")?)?;
     let errors = platform::Reader::new(child.process.stderr.take().ok_or("Missing setup stderr")?)?;
@@ -102,6 +105,8 @@ pub(super) fn initialize(
         failed.clone(),
     )
     .map_err(|e| e.to_string())?;
+    state["termination_requested"] = json!(false);
+    state["termination_reason"] = Value::Null;
     let started = Instant::now();
     let timeout = Duration::from_millis(setup["timeout_ms"].as_u64().unwrap_or(120_000));
     state["phase"] = json!("environment_setup");
@@ -150,6 +155,8 @@ pub(super) fn initialize(
                 None
             };
             if let Some(reason) = reason {
+                state["termination_reason"] = json!(reason);
+                state["termination_requested"] = json!(true);
                 state["state"] = json!(reason);
                 state["setup_success"] = json!(false);
                 return Ok(false);
@@ -168,7 +175,19 @@ pub(super) fn initialize(
             std::thread::sleep(Duration::from_millis(20));
         }
     })();
+    if result.is_err() && state["setup_exit_code"].is_null() {
+        state["termination_requested"] = json!(true);
+        state["termination_reason"] = json!("worker_failure");
+    }
     let cleanup = child.stop();
+    state["setup_tree_cleanup"] = json!(if cleanup.is_ok() { "succeeded" } else { "failed" });
+    if let Err(error) = &cleanup { state["cleanup_error"] = json!(error); }
+    match child.process.try_wait() {
+        Ok(Some(status)) => state["setup_exit_code"] = json!(status.code()),
+        Ok(None) => {}
+        Err(error) => state["setup_exit_status_error"] = json!(error.to_string()),
+    }
+    state["setup_finished_at_ms"] = json!(store::now());
     stop.store(true, Ordering::SeqCst);
     let logged = logger.join().map_err(|_| "Setup log collector panicked");
     cleanup?;

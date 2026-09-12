@@ -133,6 +133,9 @@ impl Store {
             state["log_paths"]["setup"] = json!(dir.join("setup.log"));
         }
         state["poll_after_ms"] = json!(if terminal(&state) { 0 } else { 1000 });
+        if let Some(created) = state["created_at_ms"].as_u64() {
+            state["total_elapsed_ms"] = json!(state["finished_at_ms"].as_u64().unwrap_or_else(now).saturating_sub(created));
+        }
         if let Some(started) = state["started_at_ms"].as_u64() {
             let end = state["finished_at_ms"].as_u64().unwrap_or_else(now);
             let elapsed = end.saturating_sub(started);
@@ -173,7 +176,7 @@ impl Store {
     pub fn create(
         &self,
         arguments: &Value,
-        launch: impl FnOnce(&Path) -> Result<(), String>,
+        launch: impl FnOnce(&Path) -> Result<(), super::diagnostics::Failure>,
     ) -> Result<Value, String> {
         let id = arguments["job_id"].as_str().ok_or("Missing job_id")?;
         let dir = self.directory(id)?;
@@ -212,6 +215,10 @@ impl Store {
         state["logs_truncated"] = json!(false);
         write_json(&dir.join("state.json"), &state)?;
         if let Err(error) = launch(&dir) {
+            let error = error.record(&mut state);
+            state["failure_stage"] = json!("worker_launch");
+            state["termination_reason"] = json!("launch_failure");
+            state["termination_requested"] = json!(false);
             state["state"] = json!("failed");
             state["error"] = json!(error);
             state["success"] = json!(false);
