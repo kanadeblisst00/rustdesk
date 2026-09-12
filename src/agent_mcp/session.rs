@@ -302,6 +302,13 @@ pub(super) fn call(
                 send(s, Data::Message(msg))?;
             } else if name.starts_with("terminal_") {
                 terminal(s, state, name, args)?;
+                if name == "terminal_open" {
+                    let mut result = super::terminal::opened(state, number(args, "terminal_id", 1) as i32,
+                        number(args, "timeout_ms", 3000) as u64);
+                    result["after_cursor"] = json!(cursor);
+                    result["queued"] = json!(true);
+                    return Ok(success(result));
+                }
             } else if name.starts_with("file_") {
                 return file(s, state, name, args);
             } else {
@@ -325,19 +332,18 @@ fn terminal(
     let id = number(args, "terminal_id", 1) as i32;
     if name == "terminal_open" {
         let mut terminals = state.terminals.lock().unwrap();
-        if terminals.contains_key(&id) {
-            return Err("Terminal ID already used; choose a new ID".into());
-        }
-        if terminals.len() >= 16 {
+        if let Some(terminal) = terminals.get_mut(&id) {
+            if !terminal.begin() { return Ok(()); }
+        } else if terminals.len() >= 16 {
             return Err("Maximum 16 terminals per session".into());
         }
-        terminals.insert(id, Default::default());
+        terminals.entry(id).or_default();
     } else if !state
         .terminals
         .lock()
         .unwrap()
         .get(&id)
-        .is_some_and(|(ready, _)| *ready)
+        .is_some_and(|terminal| terminal.phase == "ready")
     {
         return Err("Terminal is not ready; wait for a successful opened event".into());
     }
@@ -369,21 +375,26 @@ fn terminal(
         _ => return Err("Unknown terminal operation".into()),
     }
     let mut msg = Message::new();
+    super::terminal::mark_action(&mut action);
     msg.set_terminal_action(action);
-    send(s, Data::Message(msg))
+    if let Err(error) = send(s, Data::Message(msg)) {
+        super::terminal::response(state, &json!({"terminal_id":id,"type":"error","message":error}));
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub(super) fn terminal_output(state: &SessionState, args: &Map<String, Value>) -> ToolResult {
     let terminals = state.terminals.lock().unwrap();
-    let (ready, output) = terminals
+    let terminal = terminals
         .get(&(number(args, "terminal_id", 1) as i32))
         .ok_or("Unknown terminal")?;
-    let (bytes, next, truncated) = output.read(
+    let (bytes, next, truncated) = terminal.output.read(
         number(args, "cursor", 0) as u64,
         number(args, "limit", 65536) as usize,
     )?;
     Ok(success(
-        json!({"ready":ready,"text":String::from_utf8_lossy(&bytes),
+        json!({"ready":terminal.phase == "ready","state":terminal.phase,"generation":terminal.generation,"details":terminal.details,"text":String::from_utf8_lossy(&bytes),
         "data_base64":STANDARD.encode(&bytes),"next_cursor":next,"truncated":truncated}),
     ))
 }

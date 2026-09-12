@@ -6092,7 +6092,11 @@ impl Connection {
             user_token.to_terminal_service_token(),
         );
 
-        match proxy.handle_action(&action) {
+        #[cfg(feature = "mcp")]
+        let result = proxy.handle_mcp_action(&action);
+        #[cfg(not(feature = "mcp"))]
+        let result = proxy.handle_action(&action);
+        match result {
             Ok(Some(response)) => {
                 let mut msg_out = Message::new();
                 msg_out.set_terminal_response(response);

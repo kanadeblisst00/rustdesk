@@ -997,6 +997,50 @@ impl TerminalServiceProxy {
         &self.service_id
     }
 
+    #[cfg(feature = "mcp")]
+    fn prepare_mcp_action(&self, action: &TerminalAction) -> Result<()> {
+        // Only an explicit open may replace a lost service. Never recreate on input.
+        if matches!(action.union, Some(terminal_action::Union::Open(_)))
+            && get_service(&self.service_id).is_none()
+        {
+            #[cfg(windows)]
+            let specified_user = self.user_token.is_some();
+            #[cfg(not(windows))]
+            let specified_user = false;
+            get_or_create_service(self.service_id.clone(), self.is_persistent, specified_user)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "mcp")]
+    pub fn handle_mcp_action(&mut self, action: &TerminalAction) -> Result<Option<TerminalResponse>> {
+        if !crate::agent_mcp::terminal::is_action(action) {
+            return self.handle_action(action);
+        }
+        let result = self.prepare_mcp_action(action).and_then(|_| self.handle_action(action));
+        let id = match &action.union {
+            Some(terminal_action::Union::Open(a)) => a.terminal_id,
+            Some(terminal_action::Union::Data(a)) => a.terminal_id,
+            Some(terminal_action::Union::Resize(a)) => a.terminal_id,
+            Some(terminal_action::Union::Close(a)) => a.terminal_id,
+            _ => 0,
+        };
+        match result {
+            Ok(Some(mut response)) => {
+                if let Some(terminal_response::Union::Error(error)) = response.union.as_mut() {
+                    error.terminal_id = id;
+                }
+                Ok(Some(response))
+            }
+            Err(error) => {
+                let mut response = TerminalResponse::new();
+                response.set_error(TerminalError { terminal_id: id, message: error.to_string(), ..Default::default() });
+                Ok(Some(response))
+            }
+            other => other,
+        }
+    }
+
     pub fn handle_action(&mut self, action: &TerminalAction) -> Result<Option<TerminalResponse>> {
         let service = match get_service(&self.service_id) {
             Some(s) => s,
@@ -2080,6 +2124,33 @@ impl TerminalServiceProxy {
 #[cfg(test)]
 mod tests {
     use super::{find_utf8_split_point, OutputBuffer, Utf8ChunkAccumulator, MAX_BUFFER_LINES};
+
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn mcp_lost_service_requires_explicit_open_and_errors_keep_the_terminal_id() {
+        use super::*;
+        let id = generate_service_id();
+        let mut proxy = TerminalServiceProxy::new(id.clone(), Some(true), None);
+        let mut input = TerminalAction::new();
+        input.set_data(TerminalData { terminal_id: 7, data: b"must-not-run".to_vec().into(), ..Default::default() });
+        crate::agent_mcp::terminal::mark_action(&mut input);
+        let response = proxy.handle_mcp_action(&input).unwrap().unwrap();
+        let Some(terminal_response::Union::Error(error)) = response.union else { panic!("missing error"); };
+        assert_eq!(error.terminal_id, 7);
+        assert!(get_service(&id).is_none());
+        let mut open = TerminalAction::new();
+        open.set_open(OpenTerminal { terminal_id: 7, rows: 24, cols: 80, ..Default::default() });
+        let response = proxy.handle_mcp_action(&open).unwrap().unwrap();
+        assert!(matches!(response.union, Some(terminal_response::Union::Error(_))));
+        assert!(get_service(&id).is_none(), "unmarked UI opens must keep their old behavior");
+        crate::agent_mcp::terminal::mark_action(&mut open);
+        proxy.prepare_mcp_action(&open).unwrap();
+        let service = get_service(&id).unwrap();
+        assert!(service.lock().unwrap().is_persistent);
+        proxy.prepare_mcp_action(&open).unwrap();
+        assert!(Arc::ptr_eq(&service, &get_service(&id).unwrap()));
+        remove_service(&id);
+    }
 
     #[test]
     fn utf8_split_point_returns_full_len_for_complete_input() {
