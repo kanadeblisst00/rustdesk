@@ -8,6 +8,7 @@ mod store;
 mod tests;
 mod worker;
 mod workspace;
+mod workspace_location;
 mod workspace_files;
 mod wait;
 pub(super) mod recovery;

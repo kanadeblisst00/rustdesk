@@ -13,6 +13,9 @@ pub fn tools() -> Vec<Value> {
         ("remove_workspace", "Delete a workspace and its source/build/artifact/report files. Refuses active/unknown workspace leases. Download artifacts first; retained job logs remain.", false, json!({"workspace_id":id}), vec!["workspace_id"]),
     ] {
         let mut props = properties.as_object().cloned().unwrap_or_default();
+        if name == "create_workspace" {
+            props.insert("workspace_root".into(), json!({"type":"string","minLength":1,"maxLength":4096,"description":"Optional existing absolute directory on the remote machine, e.g. C:\\w, under the same authorized OS identity. Creates a fresh child named workspace_id; existing directories are never adopted. Choose a private writable parent with suitable inherited Windows ACLs. The location is persisted by workspace ID; subsequent calls need only the ID. Cannot relocate an existing ID. Omit for the existing job-store location. No junction or automatic elevation."}));
+        }
         if name == "write_workspace_file" {
             props.insert("replace".into(), json!({"type":"object","properties":{"expected_sha256":{"type":"string","minLength":64,"maxLength":64}},"required":["expected_sha256"],"additionalProperties":false,"description":"Explicit replacement of an existing file. Supply its current whole-file SHA-256 with every chunk. Verify the new upload, retain a verified copy under reports/.mcp-backups/, recheck the old checksum, then atomically replace. Conflicting content/retries fail. Response includes backup paths/hash. Cooperating MCP workspace operations are serialized; external writers must be stopped. Omit to keep no-overwrite behavior."}));
         }

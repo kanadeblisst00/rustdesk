@@ -184,6 +184,17 @@ fn workspace_replacement_requires_an_explicit_checksum_object() {
 }
 
 #[test]
+fn custom_workspace_root_is_optional_and_explicit() {
+    use rustdesk_agent_mcp::process::validate;
+    let mut create = json!({"session":"s","workspace_id":"w","source_revision":"r"});
+    validate("create_workspace", &create).unwrap();
+    create["workspace_root"] = json!("C:\\w");
+    validate("create_workspace", &create).unwrap();
+    create["workspace_root"] = Value::Null;
+    assert!(validate("create_workspace", &create).is_err());
+}
+
+#[test]
 fn log_limit_policy_is_explicit_and_shared_by_workspace_commands() {
     let tools = rustdesk_agent_mcp::catalog::tools();
     for name in ["run_process", "run_workspace_process"] {
