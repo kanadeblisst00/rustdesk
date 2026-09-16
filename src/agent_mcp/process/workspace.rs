@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const DIRECTORY: &str = ".workspaces";
+pub(super) const DIRECTORY: &str = ".workspaces";
 
 fn workspace(root: &Path, id: &str) -> Result<PathBuf, String> {
     if id.is_empty()
@@ -19,7 +19,7 @@ fn workspace(root: &Path, id: &str) -> Result<PathBuf, String> {
     {
         return Err("Invalid workspace_id".into());
     }
-    Ok(root.join(DIRECTORY).join(id))
+    super::workspace_location::resolve(&root.join(DIRECTORY).join(id))
 }
 
 fn relative(base: &Path, path: &str) -> Result<PathBuf, String> {
@@ -257,6 +257,11 @@ pub(super) fn call(
     let id = args["workspace_id"]
         .as_str()
         .ok_or("Missing workspace_id")?;
+    if operation == "create_workspace" && args.get("workspace_root").is_some() {
+        // Validate the ID before creating directories outside the job store.
+        workspace(&store.root, id)?;
+        super::workspace_location::create(&store.root, id, args)?;
+    }
     let dir = workspace(&store.root, id)?;
     if operation == "create_workspace" {
         if dir.exists() {
@@ -317,6 +322,7 @@ pub(super) fn call(
         "remove_workspace" => {
             idle(&dir)?;
             fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+            super::workspace_location::remove_registry(&store.root, id, &dir)?;
             Ok(json!({"workspace_id":id,"removed":true}))
         }
         "run_workspace_process" => {

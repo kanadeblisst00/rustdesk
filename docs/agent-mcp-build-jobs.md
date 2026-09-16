@@ -229,3 +229,17 @@ macOS 系统服务是独立的 `service` 程序，不能只在 Flutter 的 `core
 - `worker_pid`、`execution_identity`、`total_elapsed_ms`：worker、运行身份观察和包含启动阶段的总耗时。Windows 身份观察来自 worker 环境，不是完整令牌/权限审计；不改变授权终端身份、不提权。任意用户名、SYSTEM 或管理员运行选项未加入。
 
 `state`、`success`、`exit_code` 与初始化脚本的 `setup_exit_code/setup_success` 分开读取。保留日志仍通过 `read_process_output(tail_lines:...)` 或 `recover_processes(job_id:...)` 获取，不把大量日志重复放进状态响应；超出日志保存限额的字节无法恢复。
+
+## 可选的短工作区根目录
+
+`create_workspace` 可指定 `workspace_root`，例如：
+
+```json
+{"session":"<terminal-session>","workspace_id":"build1","source_revision":"<revision>","workspace_root":"C:\\w"}
+```
+
+父目录须已存在，并允许当前授权终端身份写入。Windows 子目录继承该父目录的 ACL，应选择该用户的私有目录；接口不提权、不切换为 SYSTEM、不创建 junction。新建的工作区为 `C:\w\build1`，仍包含 source/build/artifacts/reports。仅创建全新子目录，不接管已有同名目录。
+
+位置保存在原任务存储中的工作区登记项内，之后 `get_workspace`、文件上传、封存、执行、完成复核和删除都只需原 workspace ID。worker 重建存储对象后仍使用已记录的位置。相同 ID 不能迁移到另一路径或改换来源；要更换位置应使用新的 ID。目录标记不匹配或位置被链接重定向时拒绝继续，不能自动采用另一目录。初始化中断时保留现场供检查；不要删除不明归属目录后盲目重试。
+
+不传此参数时继续原 `.workspaces/<id>` 路径。`build_matrix.py` 的每个 target 也可填写 `workspace_root`；清单变更仍遵守原运行目录的指纹/重试规则。当前 ID 最长 64 字符，若需要更短路径，直接调用接口时使用短 ID。短工作区可以减少构建路径长度，但不保证修复第三方 SCons 自行拼接的命令。

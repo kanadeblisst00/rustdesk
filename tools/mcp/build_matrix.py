@@ -7,7 +7,7 @@ import hashlib
 import http.client
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import sys
 import tempfile
@@ -85,7 +85,7 @@ def validate(manifest):
     names, devices = set(), set()
     for target in targets:
         fields(target, ("name", "device_id", "source_revision", "git", "auth", "executables",
-                        "artifacts", "source_excludes", "screenshot_on_failure", *STAGES),
+                        "artifacts", "source_excludes", "workspace_root", "screenshot_on_failure", *STAGES),
                ("name", "device_id", "source_revision", "prepare", "build", "test"))
         if not valid_id(target["name"]):
             raise MatrixError("Target names must be safe IDs of at most 64 characters")
@@ -97,6 +97,13 @@ def validate(manifest):
         if not isinstance(target["source_revision"], str) or not re.fullmatch(
                 r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", target["source_revision"]):
             raise MatrixError("source_revision must be a full Git commit hash")
+        if "workspace_root" in target:
+            root = target["workspace_root"]
+            if not isinstance(root, str) or not root or len(root) > 4096 or any(ord(c) < 32 for c in root):
+                raise MatrixError("workspace_root must be an absolute remote directory")
+            path = PureWindowsPath(root) if PureWindowsPath(root).is_absolute() else PurePosixPath(root)
+            if not path.is_absolute() or ".." in path.parts:
+                raise MatrixError("workspace_root must be an absolute remote directory without ..")
         if not isinstance(target.get("git", "git"), str) or not target.get("git", "git"):
             raise MatrixError("git must be an executable path or name")
         auth = target.get("auth", {})
@@ -417,8 +424,9 @@ class TargetRun:
         try:
             self.connect("terminal")
             self.report["environment"] = self.data("get_environment", executables=self.target.get("executables", []))
+            options = {"workspace_root": self.target["workspace_root"]} if "workspace_root" in self.target else {}
             info = self.data("create_workspace", workspace_id=self.workspace,
-                             source_revision=self.target["source_revision"].lower())
+                             source_revision=self.target["source_revision"].lower(), **options)
             paths = {**info["paths"], "revision": self.target["source_revision"].lower()}
             for stage in STAGES[:3]:
                 for index, command in enumerate(self.target.get(stage, [])):

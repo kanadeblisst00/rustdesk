@@ -140,6 +140,18 @@ class MatrixTest(unittest.TestCase):
         self.assertEqual(suite.get("failures"), "0")
         self.assertEqual(len(self.fake.sessions), 0)
 
+    def test_custom_workspace_root_is_validated_and_forwarded(self):
+        item = target()
+        item["workspace_root"] = "C:\\short build"
+        self.run_matrix([item])
+        created = [args for name, args in self.fake.calls if name == "create_workspace"]
+        self.assertEqual(created[0]["workspace_root"], item["workspace_root"])
+        for value in (None, "", "relative", "C:relative", "/tmp/../escape", "C:\\short\\..\\escape", "/tmp/\0bad"):
+            with self.subTest(value=value):
+                item["workspace_root"] = value
+                with self.assertRaises(matrix.MatrixError):
+                    matrix.validate({"version": 1, "targets": [item]})
+
     def test_explicit_log_policy_reaches_worker_and_rejects_unknown_policy(self):
         spec = target()
         spec["build"][0]["log_limit_policy"] = "terminate"
