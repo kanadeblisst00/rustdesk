@@ -1,4 +1,5 @@
 mod diagnostics;
+mod artifact;
 mod environment;
 mod output;
 mod presentation;

@@ -243,3 +243,22 @@ macOS 系统服务是独立的 `service` 程序，不能只在 Flutter 的 `core
 位置保存在原任务存储中的工作区登记项内，之后 `get_workspace`、文件上传、封存、执行、完成复核和删除都只需原 workspace ID。worker 重建存储对象后仍使用已记录的位置。相同 ID 不能迁移到另一路径或改换来源；要更换位置应使用新的 ID。目录标记不匹配或位置被链接重定向时拒绝继续，不能自动采用另一目录。初始化中断时保留现场供检查；不要删除不明归属目录后盲目重试。
 
 不传此参数时继续原 `.workspaces/<id>` 路径。`build_matrix.py` 的每个 target 也可填写 `workspace_root`；清单变更仍遵守原运行目录的指纹/重试规则。当前 ID 最长 64 字符，若需要更短路径，直接调用接口时使用短 ID。短工作区可以减少构建路径长度，但不保证修复第三方 SCons 自行拼接的命令。
+
+## 向远程桌面等目录发布产物
+
+`publish_artifact` 在同一台远端机器上复制文件，无需 Shell 或再次下载上传。先获取 `get_artifact_manifest` 的最新任务清单，再使用其中的文件大小和 SHA-256：
+
+```javascript
+publish_artifact({
+  session: "<terminal-session>", workspace_id: "build1", job_id: "compile1",
+  path: "artifacts/app.exe", destination: "C:\\Users\\builduser\\Desktop\\app.exe",
+  expected_bytes: manifest.files[0].bytes,
+  expected_sha256: manifest.files[0].sha256
+})
+```
+
+工作区必须空闲，job 必须是该工作区最新的已结束任务；源路径只能位于 build/artifacts/reports。目标必须是已有目录内的绝对文件路径，且位于任务存储和源工作区之外。每次最多 512 MiB，I/O 有 10 秒预算；更大或更慢的复制使用现有文件传输。
+
+先验证源文件，再将内容写到目标目录的临时文件并复核，最后发布完整文件并再次校验目标。默认不覆盖不同内容；已有文件内容相同时返回 `already_present:true`，支持响应丢失后的相同请求重试。覆盖不同内容须显式提供 `replace:{expected_sha256:"<旧目标文件哈希>"}`；不匹配时拒绝覆盖。替换前会再次核对旧哈希，但这不是文件系统级的条件交换，须停止外部写入者。新文件发布使用目标文件系统内的硬链接，目标卷须支持硬链接；替换使用平台原子重命名。不会自动降级为部分可见的直接覆盖。
+
+结果包含 bytes、sha256、verified、already_present、replaced 和任务来源。`verified:true` 仅证明选定文件在校验时复制一致；命令成功、源码复核和测试是否通过仍应分别检查。跨盘复制通过目标目录暂存完成，未知响应应检查或重试相同路径和哈希；已经发布但最终校验失败时明确返回检查提示。
