@@ -156,7 +156,7 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
     }
     assert_eq!(backend.calls.load(Ordering::Relaxed), 0);
     let tools = catalog::tools();
-    assert_eq!(tools.len(), 62);
+    assert_eq!(tools.len(), 63);
     for tool in tools
         .iter()
         .filter(|t| rustdesk_agent_mcp::automation::is_tool(t["name"].as_str().unwrap()))
@@ -192,6 +192,34 @@ fn custom_workspace_root_is_optional_and_explicit() {
     validate("create_workspace", &create).unwrap();
     create["workspace_root"] = Value::Null;
     assert!(validate("create_workspace", &create).is_err());
+}
+
+#[test]
+fn artifact_publication_is_explicit_and_bounded() {
+    use rustdesk_agent_mcp::process::{is_tool, validate};
+    let args = json!({"session":"s","workspace_id":"w","job_id":"j","path":"artifacts/app.exe",
+        "destination":"C:\\deliver\\app.exe","expected_bytes":40,"expected_sha256":"a".repeat(64)});
+    assert!(is_tool("publish_artifact"));
+    validate("publish_artifact", &args).unwrap();
+    for field in ["expected_bytes", "expected_sha256", "destination", "job_id"] {
+        let mut missing = args.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(validate("publish_artifact", &missing).is_err());
+    }
+    for replacement in [json!(true), json!({}), json!({"expected_sha256":"short"}), json!({"overwrite":true})] {
+        let mut invalid = args.clone();
+        invalid["replace"] = replacement;
+        assert!(validate("publish_artifact", &invalid).is_err());
+    }
+    let mut valid = args.clone();
+    valid["replace"] = json!({"expected_sha256":"b".repeat(64)});
+    validate("publish_artifact", &valid).unwrap();
+    valid["expected_bytes"] = json!(536870913u64);
+    assert!(validate("publish_artifact", &valid).is_err());
+    let catalog = rustdesk_agent_mcp::workspace::tools();
+    let tool = catalog.iter().find(|t| t["name"] == "publish_artifact").unwrap();
+    assert_eq!(tool["annotations"]["readOnlyHint"], false);
+    assert_eq!(tool["annotations"]["destructiveHint"], true);
 }
 
 #[test]

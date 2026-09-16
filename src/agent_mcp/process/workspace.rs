@@ -22,7 +22,7 @@ fn workspace(root: &Path, id: &str) -> Result<PathBuf, String> {
     super::workspace_location::resolve(&root.join(DIRECTORY).join(id))
 }
 
-fn relative(base: &Path, path: &str) -> Result<PathBuf, String> {
+pub(super) fn relative(base: &Path, path: &str) -> Result<PathBuf, String> {
     let mut result = base.to_path_buf();
     for component in path.split('/') {
         if component.is_empty()
@@ -54,7 +54,7 @@ impl Budget {
             started: Instant::now(),
         }
     }
-    fn check(&self) -> Result<(), String> {
+    pub(super) fn check(&self) -> Result<(), String> {
         if self.bytes > self.limit || self.started.elapsed() > Duration::from_secs(10) {
             return Err(
                 "Manifest exceeds byte/time limit; split the workspace or artifact selection"
@@ -319,6 +319,7 @@ pub(super) fn call(
             store::write_json(&dir.join("workspace.json"), &metadata)?;
             Ok(metadata)
         }
+        "publish_artifact" => super::artifact::publish(store, &dir, &metadata, args),
         "remove_workspace" => {
             idle(&dir)?;
             fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
