@@ -11,6 +11,12 @@ pub mod windows;
 pub(crate) mod agent_uia;
 #[cfg(all(windows, feature = "mcp-local", not(feature = "mcp-isolated")))]
 pub(crate) mod local_agent;
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "mcp-local",
+    not(feature = "mcp-isolated")
+))]
+pub(crate) mod local_agent_unix;
 
 #[cfg(windows)]
 pub mod win_device;
