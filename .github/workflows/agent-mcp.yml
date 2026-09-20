@@ -31,7 +31,9 @@ jobs:
       - run: cargo fmt --manifest-path libs/agent_mcp/Cargo.toml --check
         if: matrix.rust == 'stable'
       - run: cargo test --locked --manifest-path libs/agent_mcp/Cargo.toml
-      - run: cargo clippy --locked --manifest-path libs/agent_mcp/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path libs/agent_mcp/Cargo.toml --features local
+      - run: cargo run --locked --manifest-path libs/agent_mcp/Cargo.toml --features local --example local_agent_fixture
+      - run: cargo clippy --locked --manifest-path libs/agent_mcp/Cargo.toml --all-targets --all-features -- -D warnings
         if: matrix.rust == 'stable'
       - run: python -m unittest discover -s tools/mcp -p "test_*.py" -v
       - name: Parse the embedded Windows UIA helper

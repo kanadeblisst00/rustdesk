@@ -779,6 +779,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Generate MCP token", ""),
         ("agent-mcp-network-tip", ""),
         ("agent-mcp-token-tip", ""),
+        ("Allow MCP local desktop capture", ""),
+        ("Allow MCP local keyboard and mouse", ""),
+        ("Copy local MCP configuration", ""),
+        ("Rotate local MCP token", ""),
+        ("Stop local MCP control", ""),
+        ("agent-mcp-local-tip", ""),
     ].iter().cloned().collect();
 }
 

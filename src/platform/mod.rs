@@ -9,6 +9,8 @@ pub use windows::*;
 pub mod windows;
 #[cfg(all(windows, feature = "mcp"))]
 pub(crate) mod agent_uia;
+#[cfg(all(windows, feature = "mcp-local", not(feature = "mcp-isolated")))]
+pub(crate) mod local_agent;
 
 #[cfg(windows)]
 pub mod win_device;

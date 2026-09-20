@@ -7,6 +7,10 @@ on:
         description: Build macOS as the separate control-only RustDeskMCPTest app
         type: boolean
         default: false
+      local_windows:
+        description: Include opt-in local desktop control in the Windows build
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -70,6 +74,7 @@ jobs:
           cp tools/mcp/server-config.json rustdesk-mcp-toolkit/SERVER-CONFIG.json
           cp docs/agent-mcp.md rustdesk-mcp-toolkit/README.md
           cp docs/agent-mcp-build-jobs.md rustdesk-mcp-toolkit/
+          cp docs/agent-mcp-local.md rustdesk-mcp-toolkit/
           python3 -c 'from pathlib import Path; p = Path("rustdesk-mcp-toolkit/agent-mcp-build-jobs.md"); p.write_text(p.read_text().replace("../tools/mcp/", ""), encoding="utf-8")'
           git rev-parse HEAD > rustdesk-mcp-toolkit/COMMIT.txt
           python3 -m zipfile -c rustdesk-mcp-toolkit.zip rustdesk-mcp-toolkit
@@ -274,10 +279,14 @@ jobs:
         if: matrix.platform != 'linux-arm64'
         env:
           ISOLATED_MACOS: ${{ inputs.isolated_macos }}
+          LOCAL_WINDOWS: ${{ inputs.local_windows }}
         run: |
           args=(--flutter --mcp --hwcodec)
           if [ "$RUNNER_OS" = "Windows" ]; then
             args+=(--portable)
+            if [ "$LOCAL_WINDOWS" = "true" ]; then
+              args+=(--mcp-local)
+            fi
           else
             args+=(--unix-file-copy-paste)
           fi
