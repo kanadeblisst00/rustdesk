@@ -29,6 +29,10 @@ macro_rules! my_println{
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn core_main() -> Option<Vec<String>> {
+    #[cfg(feature = "mcp-local")]
+    if crate::agent_mcp::local::requested() {
+        return None;
+    }
     #[cfg(feature = "mcp")]
     if crate::agent_mcp::process::worker_requested() {
         return None;

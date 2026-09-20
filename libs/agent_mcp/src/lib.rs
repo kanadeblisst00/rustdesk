@@ -1,10 +1,13 @@
 pub mod actions;
 pub mod automation;
 pub mod catalog;
+pub mod context;
 mod errors;
 pub mod events;
 pub mod helper;
 pub mod http;
+#[cfg(feature = "local")]
+pub mod local;
 pub mod pixels;
 pub mod process;
 pub mod queue;
@@ -20,6 +23,21 @@ pub type ToolResult = Result<Value, String>;
 pub trait Backend: Send + Sync + 'static {
     fn token(&self) -> Option<String>;
     fn call(&self, name: &str, arguments: &Map<String, Value>) -> ToolResult;
+
+    fn authenticate(&self, supplied: &str) -> Option<context::CallContext> {
+        self.token()
+            .filter(|token| http::valid_token(token) && http::token_equal(token, supplied))
+            .map(|_| context::CallContext::new("legacy-remote".into(), String::new(), false))
+    }
+
+    fn call_authorized(
+        &self,
+        _context: &context::CallContext,
+        name: &str,
+        arguments: &Map<String, Value>,
+    ) -> ToolResult {
+        self.call(name, arguments)
+    }
 }
 
 pub struct Server {
@@ -32,6 +50,22 @@ impl Server {
     }
 
     pub fn dispatch(&self, message: Value) -> Option<Value> {
+        self.dispatch_inner(message, None)
+    }
+
+    pub fn dispatch_authorized(
+        &self,
+        message: Value,
+        context: &context::CallContext,
+    ) -> Option<Value> {
+        self.dispatch_inner(message, Some(context))
+    }
+
+    fn dispatch_inner(
+        &self,
+        message: Value,
+        context: Option<&context::CallContext>,
+    ) -> Option<Value> {
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         let method = message.get("method").and_then(Value::as_str);
         if !message.is_object()
@@ -53,6 +87,13 @@ impl Server {
         message.get("id")?;
         let empty = json!({});
         let params = message.get("params").unwrap_or(&empty);
+        let instructions = catalog::GUIDE;
+        #[cfg(feature = "local")]
+        let instructions = if context.is_some_and(|context| context.local) {
+            local::GUIDE
+        } else {
+            instructions
+        };
         let result = match method {
             "initialize" => {
                 let Some(requested) = params.get("protocolVersion").and_then(Value::as_str) else {
@@ -66,7 +107,7 @@ impl Server {
                 json!({"protocolVersion":version,
                     "capabilities":{"tools":{"listChanged":false},"resources":{},"prompts":{}},
                     "serverInfo":{"name":"rustdesk-agent","version":env!("CARGO_PKG_VERSION")},
-                    "instructions":catalog::GUIDE})
+                    "instructions":instructions})
             }
             "ping" => json!({}),
             "tools/list" => json!({"tools":catalog::tools()}),
@@ -84,7 +125,7 @@ impl Server {
                 let Some(args) = args.as_object() else {
                     return Some(error(id, -32602, "arguments must be an object"));
                 };
-                match self.backend.call(name, args) {
+                match self.call(context, name, args) {
                     Ok(v) => v,
                     Err(e) => errors::tool_failure(e, args),
                 }
@@ -102,7 +143,7 @@ impl Server {
                     }
                     _ => return Some(error(id, -32002, "Unknown resource")),
                 };
-                match self.backend.call(name, &Map::new()) {
+                match self.call(context, name, &Map::new()) {
                     Ok(v) => json!({"contents":[{"uri":uri,"mimeType":"application/json",
                         "text":v.get("structuredContent").unwrap_or(&v).to_string()}]}),
                     Err(e) => return Some(error(id, -32603, &e)),
@@ -114,11 +155,26 @@ impl Server {
                 if params.get("name").and_then(Value::as_str) != Some("remote_operator") {
                     return Some(error(id, -32602, "Unknown prompt"));
                 }
-                json!({"messages":[{"role":"user","content":{"type":"text","text":catalog::GUIDE}}]})
+                json!({"messages":[{"role":"user","content":{"type":"text","text":instructions}}]})
             }
             _ => return Some(error(id, -32601, "Method not found")),
         };
         Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
+    }
+
+    fn call(
+        &self,
+        context: Option<&context::CallContext>,
+        name: &str,
+        args: &Map<String, Value>,
+    ) -> ToolResult {
+        match context {
+            Some(context) => {
+                context.check()?;
+                self.backend.call_authorized(context, name, args)
+            }
+            None => self.backend.call(name, args),
+        }
     }
 }
 

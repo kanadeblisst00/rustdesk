@@ -1,5 +1,7 @@
 # RustDesk Agent MCP
 
+Windows 本机桌面控制需额外启用 `mcp-local`，使用独立本机令牌，详见[本机控制说明与验收](agent-mcp-local.md)。
+
 可选的桌面控制端 MCP 服务：让 agent 通过 RustDesk 已有的加密连接、远端认证和权限控制操作设备。不是独立的远控服务器，也不会绕过密码、2FA、远端确认、系统授权或终端权限。
 
 ## 构建与启用

@@ -21,6 +21,8 @@ struct HttpState {
     server: Arc<Server>,
     slots: Arc<Semaphore>,
     wait_slots: Arc<Semaphore>,
+    #[cfg(feature = "local")]
+    stop_slots: Arc<Semaphore>,
     listen_address: Option<SocketAddrV4>,
 }
 
@@ -32,6 +34,8 @@ pub fn router(server: Arc<Server>) -> Router {
             server,
             slots: Arc::new(Semaphore::new(8)),
             wait_slots: Arc::new(Semaphore::new(4)),
+            #[cfg(feature = "local")]
+            stop_slots: Arc::new(Semaphore::new(1)),
             listen_address: None,
         })
 }
@@ -47,6 +51,8 @@ pub fn router_on(server: Arc<Server>, address: SocketAddrV4) -> Router {
             server,
             slots: Arc::new(Semaphore::new(8)),
             wait_slots: Arc::new(Semaphore::new(4)),
+            #[cfg(feature = "local")]
+            stop_slots: Arc::new(Semaphore::new(1)),
             listen_address: Some(address),
         })
 }
@@ -131,7 +137,7 @@ fn allowed_host(host: &str, address: Option<SocketAddrV4>) -> bool {
     address.ip().is_unspecified() || *address.ip() == ip
 }
 
-fn token_equal(expected: &str, actual: &str) -> bool {
+pub fn token_equal(expected: &str, actual: &str) -> bool {
     let mut diff = expected.len() ^ actual.len();
     for (i, byte) in expected.bytes().enumerate() {
         diff |= (byte ^ actual.as_bytes().get(i).copied().unwrap_or(0)) as usize;
@@ -166,14 +172,19 @@ async fn handle(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
-    if headers.get_all(header::AUTHORIZATION).iter().count() != 1 || !token_equal(&token, supplied)
-    {
+    let context = state.server.backend.authenticate(supplied);
+    if headers.get_all(header::AUTHORIZATION).iter().count() != 1 || context.is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],
         )
             .into_response();
     }
+    let Some(context) = context else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let _cancel = crate::context::CancelOnDrop(context.clone());
+    let supplied = supplied.to_owned();
     if method != Method::POST {
         return (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")]).into_response();
     }
@@ -209,6 +220,17 @@ async fn handle(
     } else {
         state.slots
     };
+    #[cfg(feature = "local")]
+    let slots = if message["method"] == "tools/call"
+        && message
+            .pointer("/params/name")
+            .and_then(serde_json::Value::as_str)
+            == Some("stop_local")
+    {
+        state.stop_slots
+    } else {
+        slots
+    };
     let Ok(permit) = slots.try_acquire_owned() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
@@ -218,7 +240,14 @@ async fn handle(
         if server.backend.token().as_deref() != Some(&token) {
             return None;
         }
-        server.dispatch(message)
+        let current = server.backend.authenticate(&supplied)?;
+        if current.principal != context.principal
+            || current.credential != context.credential
+            || current.local != context.local
+        {
+            return None;
+        }
+        server.dispatch_authorized(message, &context)
     });
     match tokio::time::timeout(Duration::from_secs(65), work).await {
         Ok(Ok(Some(value))) => ([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response(),

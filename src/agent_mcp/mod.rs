@@ -5,6 +5,8 @@ mod connection_queue;
 mod lifecycle;
 pub(crate) mod daemon;
 mod desktop;
+#[cfg(feature = "mcp-local")]
+pub(crate) mod local;
 #[cfg(not(feature = "mcp-isolated"))]
 pub(crate) mod identity;
 #[cfg(all(target_os = "macos", feature = "mcp-isolated"))]
@@ -81,6 +83,14 @@ fn listen_address() -> Result<std::net::SocketAddrV4, &'static str> {
 }
 
 pub fn local_option(key: &str) -> Option<String> {
+    #[cfg(feature = "mcp-local")]
+    if key == "agent-mcp-local-supported" {
+        return Some(if local::supported() { "Y" } else { "N" }.into());
+    }
+    #[cfg(feature = "mcp-local")]
+    if key == "agent-mcp-local-stopped" {
+        return Some(if local::stopped() { "Y" } else { "N" }.into());
+    }
     match key {
         "agent-mcp-supported" => Some("Y".into()),
         "agent-mcp-status" => Some(STATUS.lock().unwrap().clone()),
@@ -188,6 +198,8 @@ pub fn start() {
 }
 
 fn cleanup() {
+    #[cfg(feature = "mcp-local")]
+    local::revoke();
     let previous = std::mem::take(&mut *states().lock().unwrap());
     for (id, state) in previous {
         if state.headless {
@@ -201,6 +213,36 @@ struct DesktopBackend {
 }
 
 impl Backend for DesktopBackend {
+    #[cfg(feature = "mcp-local")]
+    fn authenticate(&self, supplied: &str) -> Option<rustdesk_agent_mcp::context::CallContext> {
+        let token = self.token()?;
+        if rustdesk_agent_mcp::http::token_equal(&token, supplied) {
+            return Some(rustdesk_agent_mcp::context::CallContext::new(
+                "legacy-remote".into(), String::new(), false,
+            ));
+        }
+        local::authenticate(supplied)
+    }
+
+    #[cfg(feature = "mcp-local")]
+    fn call_authorized(
+        &self, context: &rustdesk_agent_mcp::context::CallContext,
+        name: &str, args: &Map<String, Value>,
+    ) -> ToolResult {
+        if context.local {
+            return local::call(context, name, args);
+        }
+        if matches!(name, "connect_local" | "get_local_status" | "stop_local")
+            || matches!(args.get("target_type").and_then(Value::as_str), Some("local" | "all"))
+        {
+            return Err("Local control requires a separate local credential".into());
+        }
+        if name == "get_capabilities" && args.contains_key("session") {
+            return Err("Session capability queries currently require a local session; omit session for remote capabilities".into());
+        }
+        self.call(if name == "disconnect_session" { "disconnect_device" } else { name }, args)
+    }
+
     fn token(&self) -> Option<String> {
         (!lifecycle::stopping() && enabled() && listen_address() == Ok(self.address))
             .then(|| LocalConfig::get_option(TOKEN))

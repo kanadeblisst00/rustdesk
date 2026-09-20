@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'agent_mcp_local_settings.dart';
 
 class AgentMcpSettings extends StatefulWidget {
   const AgentMcpSettings({super.key});
@@ -198,6 +199,9 @@ class _AgentMcpSettingsState extends State<AgentMcpSettings> {
             const SizedBox(height: 8),
             SelectableText(_option('agent-mcp-status')),
             _networkSettings(),
+            if (_option('agent-mcp-local-supported') == 'Y')
+              // Rebuild on each status poll to reflect stops issued through MCP.
+              AgentMcpLocalSettings(),
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
               title: Text(translate('Read-only')),

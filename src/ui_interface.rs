@@ -246,6 +246,8 @@ pub fn get_builtin_option(key: &str) -> String {
 #[inline]
 pub fn set_local_option(key: String, value: String) {
     LocalConfig::set_option(key.clone(), value);
+    #[cfg(all(feature = "mcp-local", not(any(target_os = "android", target_os = "ios"))))]
+    crate::agent_mcp::local::option_changed(&key);
 }
 
 /// Resolve relative avatar path (e.g. "/avatar/xxx") to absolute URL

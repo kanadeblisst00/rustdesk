@@ -779,5 +779,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Generate MCP token", "生成 MCP 令牌"),
         ("agent-mcp-network-tip", "本机访问使用 127.0.0.1，监听所有 IPv4 网卡使用 0.0.0.0，也可填写指定的局域网 IP；可添加 :端口。保存后生效。局域网客户端需将复制配置中的 127.0.0.1 替换为本机局域网 IP。HTTP 不加密令牌，请在可信网络中使用。"),
         ("agent-mcp-token-tip", "使用 32–256 个不含空格的可见 ASCII 字符；留空将生成随机令牌。保存后生效，更换后旧令牌立即失效。"),
+        ("Allow MCP local desktop capture", "允许 MCP 截取本机桌面"),
+        ("Allow MCP local keyboard and mouse", "允许 MCP 操作本机键盘和鼠标"),
+        ("Copy local MCP configuration", "复制本机控制 MCP 配置"),
+        ("Rotate local MCP token", "更换本机控制 MCP 令牌"),
+        ("Stop local MCP control", "停止 MCP 本机控制"),
+        ("agent-mcp-local-tip", "仅控制当前登录用户的 Windows 桌面，使用独立令牌。允许键鼠意味着可通过桌面操作终端等程序。停止或修改授权将关闭本机会话；锁屏、安全桌面和系统服务会被拒绝。"),
     ].iter().cloned().collect();
 }

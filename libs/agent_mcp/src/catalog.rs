@@ -183,7 +183,41 @@ pub fn tools() -> Vec<Value> {
     ]);
     tools.extend(crate::process::tools());
     tools.extend(crate::workspace::tools());
+    #[cfg(feature = "local")]
+    local_tools(&mut tools);
     tools
+}
+
+#[cfg(feature = "local")]
+fn local_tools(tools: &mut Vec<Value>) {
+    tools.extend([
+        tool("get_local_status", "Inspect the explicitly authorized host desktop. Requires the separate local credential; never selects a remote device.", false, true, vec![], &[]),
+        tool("connect_local", "Bind the logged-in host desktop. Local control is disabled by default and needs a separate credential. Requested scopes must be granted by host policy. Keep the returned session UUID; screenshot before input.", false, false,
+            vec![("kind",choice(&["desktop"])),("desktop_id",string()),("requested_scopes",json!({"type":"array","items":{"type":"string","enum":["desktop.capture","desktop.input"]},"minItems":1,"maxItems":2}))], &["requested_scopes"]),
+        tool("disconnect_session", "Close a local or remote session. This alias retains disconnect_device compatibility.", true, false, vec![], &[]),
+        tool("stop_local", "Emergency stop for every local session. Bypasses the desktop queue, cancels remaining steps, attempts held-input release and revokes sessions. Resume requires host settings; uncertain actions are never replayed.", false, false, vec![], &[]),
+    ]);
+    for tool in tools {
+        let name = tool["name"].as_str().unwrap_or("").to_owned();
+        if crate::local::input_tool(&name) {
+            tool["description"] = json!(format!("{} For a LOCAL session, operation_id and display_generation from a screenshot within 30 seconds are mandatory; keyboard operations also require expected_window. Repeated IDs never re-execute. These guards are local-only.", tool["description"].as_str().unwrap_or("")));
+        }
+        if name == "screenshot" {
+            tool["description"] = json!(format!("{} Local sessions capture the explicitly bound host desktop and include display_generation and active_window for input guards.", tool["description"].as_str().unwrap_or("")));
+        }
+        let props = &mut tool["inputSchema"]["properties"];
+        if crate::local::input_tool(&name) {
+            props["operation_id"] = json!({"type":"string","minLength":1,"maxLength":128});
+            props["display_generation"] = json!({"type":"string","minLength":1,"maxLength":128});
+            props["expected_window"] = json!({"type":"string","minLength":1,"maxLength":128});
+        }
+        if name == "get_capabilities" {
+            props["session"] = json!({"type":"string","minLength":1,"maxLength":36});
+        }
+        if name == "list_connections" {
+            props["target_type"] = choice(&["remote", "local", "all"]);
+        }
+    }
 }
 
 pub fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
