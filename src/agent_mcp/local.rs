@@ -22,7 +22,10 @@ fn registry() -> &'static Registry<DesktopProvider> {
 }
 
 pub(super) fn supported() -> bool {
-    cfg!(all(windows, not(feature = "mcp-isolated"))) && !daemon::active()
+    cfg!(all(
+        any(windows, target_os = "linux", target_os = "macos"),
+        not(feature = "mcp-isolated")
+    )) && !daemon::active()
 }
 
 fn local_token() -> Option<String> {
@@ -136,7 +139,7 @@ impl Provider for DesktopProvider {
         check: &dyn Fn() -> Result<(), String>,
     ) -> ToolResult {
         if !supported() {
-            return Err("Local desktop is supported only by Windows mcp-local builds".into());
+            return Err("Local desktop requires a non-isolated desktop mcp-local GUI build".into());
         }
         check()?;
         let client = {
@@ -180,7 +183,15 @@ pub(crate) fn requested() -> bool {
     }
     #[cfg(all(windows, not(feature = "mcp-isolated")))]
     let result = crate::platform::local_agent::run();
-    #[cfg(not(all(windows, not(feature = "mcp-isolated"))))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "macos"),
+        not(feature = "mcp-isolated")
+    ))]
+    let result = crate::platform::local_agent_unix::run();
+    #[cfg(not(all(
+        any(windows, target_os = "linux", target_os = "macos"),
+        not(feature = "mcp-isolated")
+    )))]
     let result: Result<(), String> = Err("Local desktop is unavailable in this build".into());
     if let Err(e) = result {
         eprintln!("Local desktop agent: {e}");

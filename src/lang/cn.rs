@@ -784,6 +784,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Copy local MCP configuration", "复制本机控制 MCP 配置"),
         ("Rotate local MCP token", "更换本机控制 MCP 令牌"),
         ("Stop local MCP control", "停止 MCP 本机控制"),
-        ("agent-mcp-local-tip", "仅控制当前登录用户的 Windows 桌面，使用独立令牌。允许键鼠意味着可通过桌面操作终端等程序。停止或修改授权将关闭本机会话；锁屏、安全桌面和系统服务会被拒绝。"),
+        ("agent-mcp-local-tip", "仅控制当前登录用户的 Windows、macOS 14+ 或 Linux X11 桌面，使用独立令牌。macOS 需屏幕录制和辅助功能权限；Wayland 暂不支持。允许键鼠意味着可操作终端等程序。停止或修改授权将关闭本机会话。"),
     ].iter().cloned().collect();
 }

@@ -22,6 +22,21 @@ fn build_mac() {
     println!("cargo:rerun-if-changed={}", file);
 }
 
+#[cfg(all(target_os = "macos", feature = "mcp-local", not(feature = "mcp-isolated")))]
+fn build_mac_local() {
+    let file = "src/platform/local_agent_unix/macos.mm";
+    cc::Build::new()
+        .cpp(true)
+        .flag("-std=c++17")
+        .flag("-fobjc-arc")
+        .file(file)
+        .compile("mcp_local_mac");
+    println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=Carbon");
+    println!("cargo:rustc-link-arg=-Wl,-weak_framework,ScreenCaptureKit");
+    println!("cargo:rerun-if-changed={}", file);
+}
+
 #[cfg(all(windows, feature = "inline"))]
 fn build_manifest() {
     use std::io::Write;
@@ -94,6 +109,8 @@ fn main() {
     build_windows();
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     if target_os == "macos" {
+        #[cfg(all(target_os = "macos", feature = "mcp-local", not(feature = "mcp-isolated")))]
+        build_mac_local();
         #[cfg(target_os = "macos")]
         build_mac();
         println!("cargo:rustc-link-lib=framework=ApplicationServices");

@@ -11,6 +11,10 @@ on:
         description: Include opt-in local desktop control in the Windows build
         type: boolean
         default: false
+      local_unix:
+        description: Include opt-in local desktop control for macOS 14+ and Linux X11 (excludes isolated macOS)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -280,6 +284,7 @@ jobs:
         env:
           ISOLATED_MACOS: ${{ inputs.isolated_macos }}
           LOCAL_WINDOWS: ${{ inputs.local_windows }}
+          LOCAL_UNIX: ${{ inputs.local_unix }}
         run: |
           args=(--flutter --mcp --hwcodec)
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -289,6 +294,9 @@ jobs:
             fi
           else
             args+=(--unix-file-copy-paste)
+            if [ "$LOCAL_UNIX" = "true" ] && ! { [ "$RUNNER_OS" = "macOS" ] && [ "$ISOLATED_MACOS" = "true" ]; }; then
+              args+=(--mcp-local)
+            fi
           fi
           if [ "${{ matrix.platform }}" = "macos-arm64" ]; then
             args+=(--screencapturekit)
@@ -302,8 +310,12 @@ jobs:
         if: matrix.platform == 'linux-arm64'
         env:
           DEB_ARCH: arm64
+          LOCAL_UNIX: ${{ inputs.local_unix }}
         run: |
           args=(--flutter --mcp --hwcodec --unix-file-copy-paste)
+          if [ "$LOCAL_UNIX" = "true" ]; then
+            args+=(--mcp-local)
+          fi
           features="$(python build.py "${args[@]}" --print-features)"
           sed -i 's/\["cdylib", "staticlib", "rlib"\]/["cdylib"]/' Cargo.toml
           grep -Fq 'crate-type = ["cdylib"]' Cargo.toml

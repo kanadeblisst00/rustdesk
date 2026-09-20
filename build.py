@@ -124,7 +124,7 @@ def make_parser():
     parser.add_argument('--mcp-isolated', action='store_true',
                         help='Build a separate macOS control-only test app (requires --flutter --mcp)', default=False)
     parser.add_argument('--mcp-local', action='store_true',
-                        help='Include opt-in Windows local desktop control (requires --flutter --mcp)', default=False)
+                        help='Include opt-in local desktop control for Windows, macOS 14+, or Linux X11 (requires --flutter --mcp)', default=False)
     parser.add_argument(
         '--hwcodec',
         action='store_true',
@@ -338,8 +338,8 @@ def get_features(args):
             raise Exception('MCP Linux packaging currently requires the Debian build path')
         features.append('mcp')
     if getattr(args, 'mcp_local', False):
-        if not windows or not args.flutter or not args.mcp or getattr(args, 'mcp_isolated', False):
-            raise Exception('--mcp-local requires Windows --flutter --mcp and excludes --mcp-isolated')
+        if not args.flutter or not args.mcp or getattr(args, 'mcp_isolated', False):
+            raise Exception('--mcp-local requires --flutter --mcp and excludes --mcp-isolated')
         features.append('mcp-local')
     if getattr(args, 'mcp_isolated', False):
         if not osx:

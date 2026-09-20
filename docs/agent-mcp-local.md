@@ -1,6 +1,6 @@
-# Windows 本机桌面控制（首版）
+# 本机桌面控制（Windows、macOS 与 Linux X11）
 
-方案可行：统一 MCP 入口、显式本机会话、独立本机凭据，以及运行在已登录用户会话中的执行器。首版交付截图与键鼠的观察、操作、再观察闭环。UIA、剪贴板、文件、进程、多用户系统服务及其他平台留作后续扩展。
+方案可行：统一 MCP 入口、显式本机会话、独立本机凭据，以及运行在已登录用户会话中的执行器。支持截图与键鼠的观察、操作、再观察闭环。UIA、剪贴板、文件、进程、多用户系统服务及 Wayland 留作后续扩展。
 
 ## 方案优化
 
@@ -14,9 +14,9 @@
 
 ## 构建和启用
 
-Windows 10/11 使用 `python build.py --flutter --mcp --mcp-local`，或在 MCP desktop build 工作流勾选 `local_windows`。普通 mcp、隔离版和其他平台不会启用本机执行器。编译及运行默认关闭。
+Windows 10/11、macOS 14+、Linux X11 使用 `python build.py --flutter --mcp --mcp-local`。MCP desktop build 工作流中，Windows 勾选 `local_windows`，macOS/Linux 勾选 `local_unix`。Linux 仍使用现有 Debian 打包路径。普通 mcp、隔离版和移动平台不启用本机执行器；隔离 macOS 构建忽略工作流的 local_unix。编译及运行默认关闭。
 
-在已登录 Windows 用户桌面启动应用，在 MCP 设置中：
+在已登录用户的桌面启动应用，在 MCP 设置中：
 
 1. 启用原有 MCP 服务，设置监听地址。
 2. 打开“允许 MCP 截取本机桌面”，生成独立令牌。
@@ -27,6 +27,18 @@ Windows 10/11 使用 `python build.py --flutter --mcp --mcp-local`，或在 MCP 
 配置项为 `agent-mcp-local-enable`、`agent-mcp-local-token`、`agent-mcp-local-input`。停止、修改权限、轮换 Token 均使旧会话失效。本版网关必须由交互用户的 GUI 进程提供；后台 `--mcp-server` 不启用本机控制，避免独立进程缓存配置后无法收到设置页撤权。后台模式的远控功能保持原样，跨进程策略同步及 Session 0 服务代理留作后续。
 
 键鼠权限可通过桌面操作终端等程序，不是操作系统沙箱。不自动提权、跨用户、切换安全桌面或绕过 UAC。
+
+## macOS 与 Linux 运行条件
+
+macOS 使用 ScreenCaptureKit 的单帧截图接口，因此本机控制要求 macOS 14 或更新系统；低版本明确报错，原有远控路径不受影响。需要在系统设置中为所运行的 RustDesk MCP 应用授予“屏幕录制”和“辅助功能”权限；执行器只检查权限，不自动弹窗申请或修改系统授权。`get_local_status` 返回 capture/input 权限状态。缺少输入权限时仍可截图。锁屏、切换到其他用户、root 身份和系统安全输入状态均拒绝操作。
+
+macOS 截图与输入参数使用显示器原始像素；执行器根据每屏像素尺寸和桌面 point 尺寸换算 CGEvent 坐标，支持 Retina、负原点与多显示器。热键使用 macOS 虚拟键位置，文本采用 Unicode 事件。CGEvent 提交没有应用层确认，仍需后续截图验证。
+
+Linux 首版仅支持 X11，要求 RandR 1.3、XTEST、XKB、systemd-logind，以及 GNOME/KDE/XFCE 的 ScreenSaver D-Bus 状态接口。必须从普通用户的活动桌面运行 GUI，继承自己的 DISPLAY 和 D-Bus 环境。执行器核对 logind 的用户、类型、活动状态、远程标记、锁定标记及显示连接，并查询 ScreenSaver；状态无法确认时拒绝。root、SSH/X11 转发、网络 DISPLAY、Wayland（包括 XWayland）明确报错，不选择其他登录会话，不访问 DRM 或 uinput。
+
+Linux 坐标是 X11 根窗口帧缓冲像素，显示器由 RandR 枚举。文本仅支持当前 XKB 第一布局组中可直接映射的字符（基础列与 Shift 列）；整段文本先验证，包含无法映射的字符时不会输入其前缀。不临时重映射全局键盘，不借用剪贴板。开启 Caps Lock 或选择其他布局组时输入暂停；切回第一组并关闭 Caps Lock 后重新观察。IME 合成、任意 Unicode 文本与其他锁屏接口留待后续。
+
+参考：[Apple SCScreenshotManager](https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager)、[systemd-logind 会话接口](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html)、[XTEST 协议](https://www.x.org/docs/Xext/xtest.pdf)。
 
 ## 观察、操作、验证
 
@@ -94,3 +106,20 @@ Windows 安装包仍须实机验收：原 Token 拒绝、只读授权、截图�
 - 未连接或操作真实桌面，未启用本机权限，未推送或触发远程 CI。
 
 既有文件清单与必要性：libs/agent_mcp/src/lib.rs 和 http.rs 增加认证上下文及停止容量；catalog.rs 暴露显式本机接口；src/agent_mcp/mod.rs 接入认证、路由、状态及清理；src/core_main.rs 增加 helper 早期入口；src/platform/mod.rs 声明平台模块；src/ui_interface.rs 在权限写入时立即撤权；agent_mcp_settings.dart 按原生能力展示新设置。Cargo.toml、build.py 和两个 MCP 工作流提供显式构建及验证；tests/protocol.rs 只调整 feature 对应目录计数；tools/mcp/test_build.py 验证开关组合；src/lang/*.rs 仅追加新键，en.rs 仅追加提示文字；agent-mcp.md 链接使用文档。不存在旧远程执行路径的重构。
+
+## Unix 执行器的独立验证
+
+`tools/mcp/local-provider-check` 直接编译生产模块和 macOS Objective-C++ 桥接，避免应用音视频依赖阻塞平台代码检查。它不替代完整应用构建。普通测试仅使用合成图像、模拟输入与纯函数，不截取或操作正在使用的桌面。
+
+```sh
+cargo test --locked --manifest-path tools/mcp/local-provider-check/Cargo.toml
+cargo clippy --locked --manifest-path tools/mcp/local-provider-check/Cargo.toml --all-targets -- -D warnings
+# Linux：只向新建的临时 Xvfb 桌面输入。
+dbus-run-session -- xvfb-run -a -s '-screen 0 640x480x24 -nolisten tcp' env RUSTDESK_LOCAL_XVFB_TEST=1 cargo test --locked --manifest-path tools/mcp/local-provider-check/Cargo.toml isolated_xvfb_capture_and_input_roundtrip -- --ignored
+```
+
+Linux 测试依赖 libdbus-1-dev、pkg-config、xvfb、xauth、dbus-x11；Rust 版本为 1.75.0。CI 新增独立平台任务。真实 GNOME/KDE/XFCE 锁屏和 macOS 授权、多屏、旋转、屏幕录制仍需桌面实机验收。
+
+本次 Unix 验证记录（2026-09-20）：macOS ARM64 原生编译、6 项测试及 Clippy 通过；Debian Bookworm ARM64 容器原生编译、9 项测试及 Clippy 通过；单独启用的 Xvfb 实际截图与键鼠测试通过。协议库开启 local 的 47 项测试通过，Python 回归 61 项通过、23 项跳过。本次未执行完整 RustDesk/Flutter 安装包构建，也未操作用户的实际桌面；前次记录的全应用原生依赖缺失仍未解决。
+
+本次既有行为改动限于 `src/agent_mcp/local.rs` 的平台能力与子进程分流，`src/platform/mod.rs` 的模块入口，`Cargo.toml`/`build.rs`/`build.py` 的可选依赖和构建，两个 MCP 工作流、构建测试、两处设置提示及文档。Windows 执行器、会话注册表、认证、HTTP、停止协议和所有远控执行器均未改写。新增 Unix 共用代码仅服务这两个新增平台。

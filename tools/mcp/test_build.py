@@ -93,7 +93,7 @@ class BuildFlagTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "--mcp requires --flutter"):
             build.get_features(args)
 
-    def test_local_mcp_requires_windows_and_explicit_opt_in(self):
+    def test_local_mcp_requires_explicit_opt_in_and_excludes_isolated(self):
         with patch.object(build, 'windows', True), patch.object(build, 'osx', False):
             args = build.make_parser().parse_args(['--flutter', '--mcp', '--mcp-local'])
             self.assertEqual(build.get_features(args), ['flutter', 'mcp', 'mcp-local'])
@@ -101,9 +101,13 @@ class BuildFlagTest(unittest.TestCase):
                           ['--flutter', '--mcp', '--mcp-local', '--mcp-isolated']]:
                 with self.assertRaisesRegex(Exception, '--mcp-local'):
                     build.get_features(build.make_parser().parse_args(flags))
-        with patch.object(build, 'windows', False), patch.object(build, 'osx', True):
-            with self.assertRaisesRegex(Exception, '--mcp-local'):
-                build.get_features(build.make_parser().parse_args(['--flutter', '--mcp', '--mcp-local']))
+        for windows, macos in [(False, True), (False, False)]:
+            with self.subTest(windows=windows, macos=macos), patch.object(build, 'windows', windows), \
+                    patch.object(build, 'osx', macos), patch.object(build, 'linux_packaging_branch', return_value='deb'):
+                args = build.make_parser().parse_args(['--flutter', '--mcp', '--mcp-local'])
+                self.assertEqual(build.get_features(args), ['flutter', 'mcp', 'mcp-local'])
+                with self.assertRaisesRegex(Exception, '--mcp-local'):
+                    build.get_features(build.make_parser().parse_args(['--flutter', '--mcp', '--mcp-local', '--mcp-isolated']))
 
     def test_opt_in_does_not_change_existing_feature_paths(self):
         for flags, expected in [([], ["inline"]), (["--flutter"], ["flutter"]),

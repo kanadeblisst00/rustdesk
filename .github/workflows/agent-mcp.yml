@@ -2,15 +2,32 @@ name: Agent MCP protocol
 
 on:
   push:
-    paths: ['libs/agent_mcp/**', 'src/agent_mcp/**', 'src/platform/agent_uia.*', 'tools/mcp/**', 'build.py', '.github/workflows/agent-mcp.yml']
+    paths: ['libs/agent_mcp/**', 'src/agent_mcp/**', 'src/platform/agent_uia.*', 'src/platform/local_agent_unix/**', 'tools/mcp/**', 'build.py', 'build.rs', '.github/workflows/agent-mcp.yml']
   pull_request:
-    paths: ['libs/agent_mcp/**', 'src/agent_mcp/**', 'src/platform/agent_uia.*', 'tools/mcp/**', 'build.py', '.github/workflows/agent-mcp.yml']
+    paths: ['libs/agent_mcp/**', 'src/agent_mcp/**', 'src/platform/agent_uia.*', 'src/platform/local_agent_unix/**', 'tools/mcp/**', 'build.py', 'build.rs', '.github/workflows/agent-mcp.yml']
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  local-providers:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: '1.75.0'
+          components: clippy
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config xvfb xauth dbus-x11
+      - run: cargo test --locked --manifest-path tools/mcp/local-provider-check/Cargo.toml
+      - if: runner.os == 'Linux'
+        run: dbus-run-session -- xvfb-run -a -s '-screen 0 640x480x24 -nolisten tcp' env RUSTDESK_LOCAL_XVFB_TEST=1 cargo test --locked --manifest-path tools/mcp/local-provider-check/Cargo.toml isolated_xvfb_capture_and_input_roundtrip -- --ignored
+      - run: cargo clippy --locked --manifest-path tools/mcp/local-provider-check/Cargo.toml --all-targets -- -D warnings
   protocol:
     runs-on: ${{ matrix.os }}
     strategy:
