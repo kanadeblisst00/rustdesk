@@ -41,6 +41,7 @@ import '../common.dart';
 import '../utils/image.dart' as img;
 import '../common/widgets/dialog.dart';
 import 'input_model.dart';
+import 'first_image_watchdog.dart';
 import 'platform_model.dart';
 import 'package:flutter_hbb/utils/scale.dart';
 
@@ -135,6 +136,7 @@ class FfiModel with ChangeNotifier {
   Timer? waitForImageTimer;
   RxBool waitForFirstImage = true.obs;
   bool isRefreshing = false;
+  final _firstImageWatchdog = FirstImageWatchdog();
 
   Timer? timerScreenshot;
 
@@ -262,6 +264,7 @@ class FfiModel with ChangeNotifier {
     resetRestartReconnectState();
     clearPermissions();
     waitForImageTimer?.cancel();
+    _firstImageWatchdog.cancel();
     timerScreenshot?.cancel();
   }
 
@@ -900,6 +903,12 @@ class FfiModel with ChangeNotifier {
     final text = evt['text'];
     final link = evt['link'];
 
+    if (title == 'Connection Error' ||
+        type == 'restarting' ||
+        type == 'restarting-show') {
+      _cancelFirstImageWait();
+    }
+
     if (isAndroid &&
         _androidDocumentPickerActive &&
         title == 'Connection Error') {
@@ -1118,6 +1127,7 @@ class FfiModel with ChangeNotifier {
 
   void reconnect(OverlayDialogManager dialogManager, SessionID sessionId,
       bool forceRelay) {
+    _cancelFirstImageWait();
     // Disable relative mouse mode before reconnecting to ensure cursor is released.
     parent.target?.inputModel.setRelativeMouseMode(false);
     _cancelPendingMonitorRestore();
@@ -1186,10 +1196,12 @@ class FfiModel with ChangeNotifier {
   void showConnectedWaitingForImage(OverlayDialogManager dialogManager,
       SessionID sessionId, String type, String title, String text) {
     onClose() {
+      _cancelFirstImageWait();
       closeConnection();
     }
 
-    if (waitForFirstImage.isFalse) return;
+    if (waitForFirstImage.isFalse || _firstImageWatchdog.timedOut) return;
+    clearWaitingForImage(dialogManager, sessionId);
     dialogManager.show(
       (setState, close, context) => CustomAlertDialog(
           title: null,
@@ -1201,12 +1213,75 @@ class FfiModel with ChangeNotifier {
       tag: '$sessionId-waiting-for-image',
     );
     waitForImageDialogShow.value = true;
+    waitForImageTimer?.cancel();
     waitForImageTimer = Timer(Duration(milliseconds: 1500), () {
       if (waitForFirstImage.isTrue && !isRefreshing) {
         bind.sessionInputOsPassword(sessionId: sessionId, value: '');
       }
     });
     bind.sessionOnWaitingForImageDialogShow(sessionId: sessionId);
+    _startFirstImageWait(dialogManager, sessionId);
+  }
+
+  void _cancelFirstImageWait() {
+    _firstImageWatchdog.cancel();
+    waitForImageTimer?.cancel();
+    waitForImageTimer = null;
+  }
+
+  void _startFirstImageWait(
+      OverlayDialogManager dialogManager, SessionID sessionId) {
+    final ffi = parent.target;
+    if (ffi == null ||
+        ffi.closed ||
+        (ffi.connType != ConnType.defaultConn &&
+            ffi.connType != ConnType.viewCamera)) return;
+
+    bool stillWaiting() => !ffi.closed && waitForFirstImage.isTrue;
+
+    void onTimeout() {
+      if (!stillWaiting()) return;
+      waitForImageTimer?.cancel();
+      void onClose() {
+        _cancelFirstImageWait();
+        closeConnection();
+      }
+
+      debugPrint('First image timeout: session=$sessionId, no UI image after 30s, '
+          'display=${pi.currentDisplay}, platform=${pi.platform}');
+      clearWaitingForImage(dialogManager, sessionId);
+      // Keep the same tag so a late first image dismisses this error as well.
+      dialogManager.show(
+        (setState, close, context) => CustomAlertDialog(
+          title: null,
+          content: SelectionArea(
+            child: msgboxContent('error', 'Connection Error',
+                '${translate(kMsgboxTextWaitingForImage)}\n${translate('Timeout')}'),
+          ),
+          actions: [
+            dialogButton('Close', onPressed: onClose, isOutline: true),
+            dialogButton('Retry',
+                onPressed: () => reconnect(dialogManager, sessionId, false)),
+          ],
+          onCancel: onClose,
+        ),
+        tag: '$sessionId-waiting-for-image',
+      );
+    }
+
+    _firstImageWatchdog.start(
+      onRefresh: () async {
+        if (!stillWaiting()) return;
+        debugPrint('First image still pending: session=$sessionId, '
+            'refreshing video after 10s');
+        try {
+          await sessionRefreshVideo(sessionId, pi);
+        } catch (e) {
+          debugPrint('First image refresh failed: session=$sessionId, $e');
+        }
+      },
+      onTimeout: onTimeout,
+    );
   }
 
   void showPrivacyFailedDialog(
@@ -3788,6 +3863,7 @@ class FFI {
 
   /// Mobile reuse FFI
   void mobileReset() {
+    ffiModel._cancelFirstImageWait();
     ffiModel.resetRestartReconnectState();
     ffiModel.waitForFirstImage.value = true;
     ffiModel.isRefreshing = false;
@@ -3957,6 +4033,7 @@ class FFI {
         if (message is EventToUI_Event) {
           if (message.field0 == "close") {
             closed = true;
+            ffiModel._cancelFirstImageWait();
             debugPrint('Exit session event loop');
             return;
           }
@@ -4010,6 +4087,8 @@ class FFI {
       clearWaitingForImage(dialogManager, sessionId);
     }
     if (ffiModel.waitForFirstImage.value == true) {
+      ffiModel._cancelFirstImageWait();
+      debugPrint('First UI image received: session=$sessionId');
       ffiModel.waitForFirstImage.value = false;
       ffiModel.cancelPendingRestoreTimer();
       ffiModel.resetRestartReconnectState();
@@ -4059,6 +4138,7 @@ class FFI {
   /// Close the remote session.
   Future<void> close({bool closeSession = true}) async {
     closed = true;
+    ffiModel._cancelFirstImageWait();
     if (isWeb) {
       platformFFI.clearVideoFrameCallback();
     }
