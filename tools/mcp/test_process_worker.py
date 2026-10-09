@@ -98,6 +98,14 @@ class ProcessWorkerTest(unittest.TestCase):
         self.assertTrue(result["state"]["success"], result)
         self.assertEqual(result["stdout"].splitlines(), [b"''", b"False"])
 
+    def test_discarded_logs_never_reach_disk(self):
+        result = self.run_worker("import sys; print('private-out'); sys.stderr.write('private-err')",
+                                 request_overrides={"retain_logs": False})
+        self.assertTrue(result["state"]["success"], result)
+        self.assertFalse(result["state"]["logs_retained"])
+        self.assertEqual(result["stdout"], b"")
+        self.assertEqual(result["stderr"], b"")
+
     @unittest.skipUnless(sys.platform == "win32", "Windows file sharing")
     def test_heartbeat_sharing_failure_does_not_kill_the_command(self):
         result = self.run_worker(
@@ -126,6 +134,12 @@ class ProcessWorkerTest(unittest.TestCase):
             "args": ["Write-Output 'space and \"literal quote\"'; exit 7"]})
         self.assertEqual(result["state"]["exit_code"], 7, result)
         self.assertIn(b'space and "literal quote"', result["stdout"])
+        result = self.run_worker("", request_overrides={
+            "executable": "powershell.exe", "shell": "powershell",
+            "args": ["using namespace System\nparam()\nWrite-Output $ProgressPreference; Write-Progress -Activity 'test'; exit 0"]})
+        self.assertTrue(result["state"]["success"], result)
+        self.assertIn(b'SilentlyContinue', result["stdout"])
+        self.assertNotIn(b'<PR ', result["stderr"])
 
     def test_cancel_running_command(self):
         result = self.run_worker(

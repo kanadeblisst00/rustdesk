@@ -23,7 +23,28 @@ pub(super) fn read_json(path: &Path) -> Result<Value, String> {
 }
 
 pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
-    write_json_detailed(path, value).map_err(|e| e.to_string())
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let data = serde_json::to_vec(value).map_err(|e| e.to_string())?;
+        file.write_all(&data).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        super::platform::replace(&temporary, path)
+    })();
+    if result.is_err() {
+        if let Err(e) = fs::remove_file(&temporary) {
+            hbb_common::log::debug!("Remove incomplete job record: {e}");
+        }
+    }
+    result
 }
 
 pub(super) fn write_json_detailed(path: &Path, value: &Value) -> Result<(), super::diagnostics::Failure> {
@@ -221,6 +242,7 @@ impl Store {
         state["timeout_policy"] = json!("terminate_process_tree");
         state["log_limit_policy"] = json!(arguments["log_limit_policy"].as_str().unwrap_or("truncate"));
         state["logs_truncated"] = json!(false);
+        state["logs_retained"] = json!(arguments["retain_logs"].as_bool().unwrap_or(true));
         write_json(&dir.join("state.json"), &state)?;
         if let Err(error) = launch(&dir) {
             let error = error.record(&mut state);
@@ -242,6 +264,17 @@ impl Store {
         }
         if operation == "wait_for_process" {
             return super::wait::call(self, args);
+        }
+        if operation == "remove_processes" {
+            let ids = args["job_ids"].as_array().ok_or("Missing job_ids")?;
+            let mut results = Vec::new();
+            for id in ids {
+                results.push(match self.call("remove_process", &json!({"job_id":id})) {
+                    Ok(result) => result,
+                    Err(error) => json!({"job_id":id,"removed":false,"error":error}),
+                });
+            }
+            return Ok(json!({"results":results}));
         }
         let id = args["job_id"].as_str().ok_or("Missing job_id")?;
         let dir = self.directory(id)?;
@@ -350,6 +383,9 @@ impl Store {
                 result["truncated_start"] = json!(truncated_start);
                 let fields = result.as_object_mut().ok_or("Invalid output metadata")?;
                 fields.extend(json!({"job_id":id,"stream":stream,"offset":offset,"next_offset":next,"data_base64":STANDARD.encode(&data),"complete":terminal(&state),"eof":terminal(&state) && next >= state[format!("{stream}_bytes")].as_u64().unwrap_or(0)}).as_object().ok_or("Invalid log metadata")?.clone());
+                if args["include_base64"] == false && fields.get("text").is_some_and(Value::is_string) {
+                    fields.remove("data_base64");
+                }
                 Ok(result)
             }
             _ => Err("Unknown process operation".into()),

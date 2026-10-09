@@ -2,6 +2,7 @@ mod diagnostics;
 mod artifact;
 mod environment;
 mod output;
+mod read_file;
 mod presentation;
 mod platform;
 mod store;
@@ -20,6 +21,10 @@ use super::*;
 use hbb_common::{message_proto::Message, protobuf::UnknownValueRef};
 use rustdesk_agent_mcp::process as model;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+pub(super) fn plain_terminal_output(text: &str) -> String {
+    presentation::plain(text)
+}
 
 #[derive(Default)]
 pub(super) struct State {
@@ -141,6 +146,12 @@ pub(super) fn call(
     )?;
     session::send(s, crate::client::Data::Message(msg))?;
     let started = Instant::now();
+    let request_timeout = if name == "wait_for_process" {
+        Duration::from_millis(args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(1000).min(60000) + 3000)
+            .max(Duration::from_secs(15))
+    } else {
+        Duration::from_secs(15)
+    };
     loop {
         let current = session::get(id)?;
         if !Arc::ptr_eq(&current, s) || generation != state.automation.generation() {
@@ -157,7 +168,7 @@ pub(super) fn call(
         {
             return result.map(success);
         }
-        if started.elapsed() >= Duration::from_secs(15) {
+        if started.elapsed() >= request_timeout {
             return Err("Remote process request timed out. Peer may need an mcp build. For run_process, query/reuse the SAME job_id; never retry with a new ID automatically.".into());
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -226,8 +237,11 @@ pub(crate) fn dispatch(
             if request["operation"] == "get_environment" {
                 return environment::observe(&identity, &request["arguments"]);
             }
+            if request["operation"] == "read_remote_file" {
+                return read_file::call(&request["arguments"]);
+            }
             let operation = request["operation"].as_str().ok_or("Missing operation")?;
-            let _lock = if matches!(operation, "run_process" | "remove_process")
+            let _lock = if matches!(operation, "run_process" | "remove_process" | "remove_processes")
                 || rustdesk_agent_mcp::workspace::is_tool(operation)
             {
                 Some(STORE_LOCK.lock().unwrap())

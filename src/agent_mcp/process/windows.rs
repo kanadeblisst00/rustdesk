@@ -101,6 +101,8 @@ pub(in super::super) fn shell_arguments(
             .raw_arg(format!("\"{script}\""));
     } else {
         use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+        // Parse the caller's script separately so leading param/using declarations stay valid.
+        let script = format!("$ProgressPreference='SilentlyContinue'; & ([scriptblock]::Create('{}'))", script.replace('\'', "''"));
         let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
         command
             .args([
@@ -149,6 +151,30 @@ pub(in super::super) struct Identity {
     token: Option<usize>,
 }
 impl Identity {
+    fn privileges(&self) -> serde_json::Value {
+        use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+        use windows::Win32::System::Threading::OpenProcessToken;
+        let result = (|| -> Result<bool, String> {
+            let owned = if self.token.is_none() {
+                let mut token = HANDLE::default();
+                unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }
+                    .map_err(|e| format!("OpenProcessToken(current worker): {e}"))?;
+                Some(Handle(token))
+            } else { None };
+            let token = self.token.map(|t| HANDLE(t as _))
+                .or_else(|| owned.as_ref().map(|t| t.0)).ok_or("Missing identity token")?;
+            let mut elevation = TOKEN_ELEVATION::default();
+            let mut size = 0;
+            unsafe { GetTokenInformation(token, TokenElevation, Some(&mut elevation as *mut _ as _), std::mem::size_of_val(&elevation) as u32, &mut size) }
+                .map_err(|e| format!("GetTokenInformation(TokenElevation, authorized identity): {e}"))?;
+            Ok(elevation.TokenIsElevated != 0)
+        })();
+        match result {
+            Ok(elevated) => serde_json::json!({"elevated":elevated}),
+            Err(error) => serde_json::json!({"elevated":null,"error":error}),
+        }
+    }
+
     pub fn environment(
         &self,
     ) -> Result<
@@ -168,7 +194,8 @@ impl Identity {
                 })
                 .collect();
             vars.insert("PATH".into(), process_path()?);
-            let user = serde_json::json!({"name":vars.get("USERNAME"),"domain":vars.get("USERDOMAIN"),"identity_source":"authorized terminal process"});
+            let mut user = serde_json::json!({"name":vars.get("USERNAME"),"domain":vars.get("USERDOMAIN"),"identity_source":"authorized terminal process"});
+            user["privileges"] = self.privileges();
             return Ok((vars, user));
         }
         let mut environment = std::ptr::null_mut();
@@ -203,7 +230,8 @@ impl Identity {
                 &system_directory()?,
             )?;
             vars.insert("PATH".into(), path);
-            let user = serde_json::json!({"name":vars.get("USERNAME"),"domain":vars.get("USERDOMAIN"),"identity_source":if self.token.is_some(){"authorized terminal logon token"}else{"authorized terminal process"}});
+            let mut user = serde_json::json!({"name":vars.get("USERNAME"),"domain":vars.get("USERDOMAIN"),"identity_source":if self.token.is_some(){"authorized terminal logon token"}else{"authorized terminal process"}});
+            user["privileges"] = self.privileges();
             Ok((vars, user))
         })();
         if let Err(e) = unsafe { DestroyEnvironmentBlock(environment) } {

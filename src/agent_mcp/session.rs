@@ -393,6 +393,16 @@ pub(super) fn terminal_output(state: &SessionState, args: &Map<String, Value>) -
         number(args, "cursor", 0) as u64,
         number(args, "limit", 65536) as usize,
     )?;
+    if flag(args, "strip_ansi") || args.get("include_base64") == Some(&Value::Bool(false)) {
+        let text = String::from_utf8_lossy(&bytes);
+        let mut result = json!({"ready":terminal.phase == "ready","state":terminal.phase,"generation":terminal.generation,"details":terminal.details,
+            "text":if flag(args,"strip_ansi") { super::process::plain_terminal_output(&text) } else { text.into_owned() },
+            "next_cursor":next,"truncated":truncated});
+        if args.get("include_base64") != Some(&Value::Bool(false)) || std::str::from_utf8(&bytes).is_err() {
+            result["data_base64"] = json!(STANDARD.encode(&bytes));
+        }
+        return Ok(success(result));
+    }
     Ok(success(
         json!({"ready":terminal.phase == "ready","state":terminal.phase,"generation":terminal.generation,"details":terminal.details,"text":String::from_utf8_lossy(&bytes),
         "data_base64":STANDARD.encode(&bytes),"next_cursor":next,"truncated":truncated}),
