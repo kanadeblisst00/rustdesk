@@ -142,7 +142,7 @@ pub(super) fn initialize(
             read()?;
             if heartbeat.elapsed() >= Duration::from_secs(1) {
                 state["updated_at_ms"] = json!(store::now());
-                store::write_json(&dir.join("state.json"), state)?;
+                worker::heartbeat(dir, state);
                 heartbeat = Instant::now();
             }
             let reason = if dir.join("cancel.json").exists() {
