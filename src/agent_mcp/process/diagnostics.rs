@@ -4,6 +4,18 @@ use serde_json::{json, Value};
 pub(super) struct Failure(Value);
 
 impl Failure {
+    pub fn target(mut self, target: impl ToString) -> Self {
+        self.0["target"] = json!(target.to_string());
+        self
+    }
+
+    pub fn warn(self, state: &mut Value, stage: &str) {
+        hbb_common::log::warn!("Job monitor {stage}: {self}");
+        state["monitor_warning_count"] = json!(state["monitor_warning_count"].as_u64().unwrap_or(0).saturating_add(1));
+        state["monitor_warning"] = self.0;
+        state["monitor_warning"]["stage"] = json!(stage);
+    }
+
     pub fn message(operation: &str, message: impl ToString) -> Self {
         Self(json!({"operation":operation,"message":message.to_string()}))
     }
@@ -118,8 +130,9 @@ impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}: {}",
+            "{}{}: {}",
             self.0["operation"].as_str().unwrap_or("process"),
+            self.0["target"].as_str().map(|s| format!(" ({s})")).unwrap_or_default(),
             self.0["message"].as_str().unwrap_or("Unknown failure")
         )
     }

@@ -23,6 +23,43 @@ fn spec(id: &str) -> Value {
 }
 
 #[test]
+fn failed_heartbeat_does_not_change_command_state_or_request_termination() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let dir = store.directory("heartbeat").unwrap();
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::create_dir(dir.join("state.json")).unwrap();
+    let mut state = json!({"state":"running","phase":"command","termination_requested":false});
+    worker::heartbeat(&dir, &mut state);
+    assert_eq!(state["state"], "running");
+    assert_eq!(state["termination_requested"], false);
+    assert_eq!(state["monitor_warning"]["stage"], "heartbeat_write");
+    assert_eq!(state["monitor_warning"]["target"], dir.join("state.json").to_str().unwrap());
+    assert!(state["monitor_warning"]["operation"].is_string());
+    std::fs::remove_dir(dir.join("state.json")).unwrap();
+    worker::heartbeat(&dir, &mut state);
+    let saved = store::read_json(&dir.join("state.json")).unwrap();
+    assert_eq!(saved["state"], "running");
+    assert_eq!(saved["monitor_warning_count"], 1);
+}
+
+#[test]
+#[cfg(unix)]
+fn corrupt_timeout_update_does_not_kill_the_command() {
+    let temp = Temp::new();
+    let store = temp.store();
+    store.create(&shell_spec("timeout-update", "sleep 0.1; printf survived"), |_| Ok(())).unwrap();
+    let dir = store.directory("timeout-update").unwrap();
+    std::fs::write(dir.join("timeout.json"), b"invalid json").unwrap();
+    worker::run(&dir).unwrap();
+    let state = store.status("timeout-update").unwrap();
+    assert_eq!(state["success"], true);
+    assert_eq!(state["termination_requested"], false);
+    assert_eq!(state["monitor_warning"]["operation"], "read_timeout_update");
+    assert_eq!(std::fs::read(dir.join("stdout.log")).unwrap(), b"survived");
+}
+
+#[test]
 fn durable_idempotency_and_conflicting_retries() {
     let temp = Temp::new();
     let store = temp.store();

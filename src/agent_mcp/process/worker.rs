@@ -13,6 +13,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) fn heartbeat(dir: &Path, state: &mut serde_json::Value) {
+    state["updated_at_ms"] = json!(store::now());
+    if let Err(error) = store::write_json_detailed(&dir.join("state.json"), state) {
+        error.warn(state, "heartbeat_write");
+    }
+}
+
 pub(super) fn capture<R: Read + Send + 'static>(
     mut reader: R,
     mut file: File,
@@ -100,7 +107,7 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
     }
     state["updated_at_ms"] = json!(store::now());
     state["finished_at_ms"] = json!(store::now());
-    store::write_json(&dir.join("state.json"), &state)?;
+    store::write_json_detailed(&dir.join("state.json"), &state).map_err(|e| e.to_string())?;
     super::workspace::release(dir)
 }
 
@@ -219,23 +226,34 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
             if (heartbeat.elapsed() >= Duration::from_secs(1) || started.elapsed() >= timeout)
                 && dir.join("timeout.json").exists()
             {
-                let update = store::read_json(&dir.join("timeout.json"))?;
-                let requested = update["timeout_ms"]
-                    .as_u64()
-                    .ok_or("Invalid timeout update")?;
-                if !(100..=86_400_000).contains(&requested) {
-                    return Err("Invalid timeout update".into());
+                let update = store::read_json(&dir.join("timeout.json")).and_then(|value| {
+                    value["timeout_ms"].as_u64().filter(|ms| (100..=86_400_000).contains(ms))
+                        .ok_or_else(|| "Invalid timeout update".to_owned())
+                });
+                match update {
+                    Ok(requested) => {
+                        timeout = timeout.max(Duration::from_millis(requested));
+                        state["timeout_ms"] = json!(timeout.as_millis() as u64);
+                    }
+                    Err(error) => super::diagnostics::Failure::message("read_timeout_update", error)
+                        .target(dir.join("timeout.json").display()).warn(state, "timeout_update"),
                 }
-                timeout = timeout.max(Duration::from_millis(requested));
-                state["timeout_ms"] = json!(timeout.as_millis() as u64);
             }
             if heartbeat.elapsed() >= Duration::from_secs(1) {
                 state["logs_truncated"] = json!(exceeded.load(Ordering::SeqCst));
-                state["updated_at_ms"] = json!(store::now());
-                store::write_json(&dir.join("state.json"), state)?;
+                self::heartbeat(dir, state);
                 heartbeat = Instant::now();
             }
-            if let Some(status) = child.process.try_wait().map_err(|e| e.to_string())? {
+            let observed = match child.process.try_wait() {
+                Ok(status) => status,
+                Err(error) => {
+                    super::diagnostics::Failure::io("try_wait", error)
+                        .target(format!("child pid {}", child.process.id()))
+                        .warn(state, "process_status");
+                    None
+                }
+            };
+            if let Some(status) = observed {
                 state["termination_reason"] = json!("process_exit");
                 state["state"] = json!("exited");
                 super::diagnostics::exit_status(state, status);

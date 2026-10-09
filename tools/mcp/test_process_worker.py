@@ -98,6 +98,18 @@ class ProcessWorkerTest(unittest.TestCase):
         self.assertTrue(result["state"]["success"], result)
         self.assertEqual(result["stdout"].splitlines(), [b"''", b"False"])
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows file sharing")
+    def test_heartbeat_sharing_failure_does_not_kill_the_command(self):
+        result = self.run_worker(
+            "import pathlib,time; "
+            "f=pathlib.Path('job/state.json').open('rb'); "
+            "time.sleep(3); f.close(); print('survived-state-reader')")
+        self.assertTrue(result["state"]["success"], result)
+        self.assertFalse(result["state"]["termination_requested"])
+        self.assertEqual(result["state"]["monitor_warning"]["operation"], "MoveFileExW")
+        self.assertTrue(result["state"]["monitor_warning"]["target"].endswith("state.json"))
+        self.assertIn(b"survived-state-reader", result["stdout"])
+
     @unittest.skipUnless(sys.platform == "win32", "Windows explicit shell grammar")
     def test_windows_shells_preserve_quoted_paths_and_scripts(self):
         with tempfile.TemporaryDirectory(prefix="mcp shell space ") as directory:

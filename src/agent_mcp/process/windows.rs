@@ -125,6 +125,26 @@ pub(in super::super) fn replace(from: &Path, to: &Path) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+pub(in super::super) fn replace_job_record(from: &Path, to: &Path) -> Result<(), Failure> {
+    let source = wide(from.as_os_str());
+    let target = wide(to.as_os_str());
+    for attempt in 0..=10 {
+        match unsafe { MoveFileExW(PCWSTR(source.as_ptr()), PCWSTR(target.as_ptr()), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) } {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                // Readers without FILE_SHARE_DELETE and antivirus can briefly block replacement.
+                let code = error.code().0 as u32;
+                if attempt < 10 && matches!(code, 0x80070005 | 0x80070020 | 0x80070021) {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
+                }
+                return Err(Failure::windows("MoveFileExW", error).target(to.display()));
+            }
+        }
+    }
+    Err(Failure::message("MoveFileExW", "Job record retry limit reached").target(to.display()))
+}
+
 pub(in super::super) struct Identity {
     token: Option<usize>,
 }

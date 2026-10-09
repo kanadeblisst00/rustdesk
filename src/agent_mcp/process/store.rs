@@ -23,6 +23,11 @@ pub(super) fn read_json(path: &Path) -> Result<Value, String> {
 }
 
 pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
+    write_json_detailed(path, value).map_err(|e| e.to_string())
+}
+
+pub(super) fn write_json_detailed(path: &Path, value: &Value) -> Result<(), super::diagnostics::Failure> {
+    use super::diagnostics::Failure;
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -31,13 +36,16 @@ pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
+    let mut file = options.open(&temporary).map_err(|e| Failure::io("create_job_record", e).target(temporary.display()))?;
     let result = (|| {
-        let data = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-        file.write_all(&data).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
+        let data = serde_json::to_vec(value).map_err(|e| Failure::message("serialize_job_record", e).target(path.display()))?;
+        file.write_all(&data).map_err(|e| Failure::io("write_job_record", e).target(temporary.display()))?;
+        file.sync_all().map_err(|e| Failure::io("sync_job_record", e).target(temporary.display()))?;
         drop(file);
-        super::platform::replace(&temporary, path)
+        #[cfg(windows)]
+        return super::platform::replace_job_record(&temporary, path);
+        #[cfg(not(windows))]
+        std::fs::rename(&temporary, path).map_err(|e| Failure::io("rename_job_record", e).target(path.display()))
     })();
     if result.is_err() {
         if let Err(e) = fs::remove_file(&temporary) {
