@@ -30,6 +30,8 @@
 | `read_process_output` | 按 `offset` 续读；或用互斥的 `tail_lines` 读取末尾 N 行；可选 `encoding` |
 | `cancel_process` | 写入取消请求；继续查询直至 `cancelled` 或其他最终状态 |
 | `remove_process` | 显式删除已完成任务及其日志；拒绝活动或未知状态 |
+| `remove_processes` | 用 `job_ids` 一次删除 1–64 个已完成任务，逐项返回结果；活动、未知和不存在的 ID 单独报错 |
+| `read_remote_file` | 终端身份只读文件：绝对 `path`、字节 `offset` 或互斥的 `tail_lines`，`max_bytes` 默认 16384、最大 65536 |
 
 每次构建由调用方分配唯一 `job_id`。同 ID、同参数再次调用只返回已有状态；参数不同则拒绝。网络超时后继续查询或使用同 ID，不生成新 ID 自动重跑。缺少响应也可能表示旧版被控端尚不支持该扩展。
 
@@ -100,7 +102,7 @@ Windows shell 示例（可执行文件路径需按目标实际安装核对）：
 
 不传 `job_id` 时返回当前终端身份的保留任务列表；传入原 ID 时返回状态及 stdout/stderr/setup 各最近最多 8192 字节、字节游标和编码元数据。`recovery_state:observed` 只表示查询到了记录，不表示任务成功；连接或读取失败返回 `connection_required/unavailable`，不会把任务写成失败。状态读取成功但日志读取再次断线时，保留刚读取的 job 并单独报告 `output_error`。必须使用原 OS 身份；连接凭据仍用 `input_password`，不由恢复工具收集或保存。新建恢复会话的 UUID 会返回，后续可继续使用或显式断开。
 
-`wait_for_process` 通过当前终端会话接收原 `job_id`、`timeout_ms`（0–10000，默认 1000）、三个流的 `*_offset`，以及可选 `after_state/after_phase`。返回 `job`、`event` 和 `output`；event 包括 `completed`、`unknown`、`state_changed`、`phase_changed`、`output`、`timeout`。每流默认 16384 字节、最大 32768，按各 `next_offset` 继续。已完成时仍可能有未读完的日志，应以 `eof` 为准；等待超时不会修改任务、取消进程或改变执行超时。
+`wait_for_process` 通过当前终端会话接收原 `job_id`、`timeout_ms`（0–60000，默认 1000）、三个流的 `*_offset`，以及可选 `after_state/after_phase`。返回 `job`、`event` 和 `output`；event 包括 `completed`、`unknown`、`state_changed`、`phase_changed`、`output`、`timeout`。每流默认 16384 字节、最大 32768，按各 `next_offset` 继续。已完成时仍可能有未读完的日志，应以 `eof` 为准；等待超时不会修改任务、取消进程或改变执行超时。
 
 状态现在还返回 `observed_at_ms`、`heartbeat_age_ms`、`last_known_state`。心跳超过 30 秒依旧返回 `unknown`，同时保留最后记录状态供诊断；不能靠 PID 存在或最近有输出猜测任务还活着，也不能自动重跑未知任务。观察窗口最长 10 秒，在专用阻塞线程执行，不占用工作区写锁。
 
@@ -262,3 +264,19 @@ publish_artifact({
 先验证源文件，再将内容写到目标目录的临时文件并复核，最后发布完整文件并再次校验目标。默认不覆盖不同内容；已有文件内容相同时返回 `already_present:true`，支持响应丢失后的相同请求重试。覆盖不同内容须显式提供 `replace:{expected_sha256:"<旧目标文件哈希>"}`；不匹配时拒绝覆盖。替换前会再次核对旧哈希，但这不是文件系统级的条件交换，须停止外部写入者。新文件发布使用目标文件系统内的硬链接，目标卷须支持硬链接；替换使用平台原子重命名。不会自动降级为部分可见的直接覆盖。
 
 结果包含 bytes、sha256、verified、already_present、replaced 和任务来源。`verified:true` 仅证明选定文件在校验时复制一致；命令成功、源码复核和测试是否通过仍应分别检查。跨盘复制通过目标目录暂存完成，未知响应应检查或重试相同路径和哈希；已经发布但最终校验失败时明确返回检查提示。
+
+## 2026-10-09 排查接口补充
+
+- `wait_for_process.timeout_ms` 最大 60000；远程请求等待预算同步放宽到指定等待加 3 秒（至少 15 秒），HTTP 总上限 65 秒、stdio 默认 70 秒。它仍会因新输出/阶段变化提前返回。进程等待与事件等待共享 4 个 HTTP 等待槽，控制调用保留独立容量。
+- `wait_for_process.tail_lines`：每流只返回末尾 1–1000 行，受 `max_bytes` 限制；`*_offset` 仍决定何时被新输出唤醒，回包按 `next_offset` 续读。指定 tail 表示主动省略旧日志。
+- `read_process_output`、`wait_for_process`、`read_remote_file` 的 `include_base64:false`：明文可解码时省略 base64，默认仍返回。解码失败、编码歧义、字符被切开或显式 `encoding:base64` 时始终保留原始字节。
+- `run_process` / `run_workspace_process` 的 `retain_logs:false`：stdout/stderr/setup 只读取、丢弃，不把内容写入日志；原有字节上限及超限策略仍生效。请求参数、环境覆盖和任务状态仍保留，完成后用 `remove_process` / `remove_processes` 删除。不会自动删除旧任务。
+- PowerShell 已有 `-NoProfile`，现在默认设置 `$ProgressPreference='SilentlyContinue'`，然后单独解析调用方脚本，保持开头 `using` / `param` 声明可用。脚本可以主动覆盖偏好。参考 [Microsoft PowerShell 偏好变量](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_preference_variables?view=powershell-5.1#progresspreference)。GBK 自动回退原已存在；不将所有失败都强行解释为 GBK。
+- 心跳写盘失败、退出状态观察失败和超时更新读取失败不再立即清理任务。心跳失败记录在 `monitor_warning`（operation/target/stage/OS 或 HRESULT）和计数中，下次可写盘时保存。持久写盘失败仍可能导致观察到 `unknown`；这不意味着任务已终止。日志收集失败、显式取消、执行超时和显式超限终止仍清理进程树。
+- Windows 状态文件替换对 access denied/sharing/lock violation 做最多 200ms 的短重试。最终状态仍无法写入时明确报错，不宣称结果已持久化。
+- Windows `get_environment.user.privileges.elevated` 以及任务 `execution_identity.privileges.elevated` 返回实际授权令牌的提权状态；无法观察时为 null 并附 error，不回退为 SYSTEM。
+- `terminal_output(strip_ansi:true, include_base64:false)` 清理完整 ANSI CSI/OSC 序列并减少返回体。原始字节游标不变；不模拟屏幕重绘，也不会丢弃无法解码的原始字节。
+
+一次性读取示例：`read_remote_file(session, path, tail_lines:20, max_bytes:8192, encoding:"cp936", include_base64:false)`。请先远端筛选/脱敏敏感日志，本工具不会自动脱敏。
+
+详细评估和未实现项目见 [本轮反馈评估](agent-mcp-agent-feedback-2026-10-09.md)。

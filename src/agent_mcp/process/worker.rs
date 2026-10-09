@@ -24,6 +24,7 @@ pub(super) fn capture<R: Read + Send + 'static>(
     mut reader: R,
     mut file: File,
     limit: u64,
+    retain: bool,
     stop: Arc<AtomicBool>,
     exceeded: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
@@ -48,7 +49,9 @@ pub(super) fn capture<R: Read + Send + 'static>(
                                 }
                             }
                             let keep = (limit.saturating_sub(written) as usize).min(n);
-                            file.write_all(&bytes[..keep]).map_err(|e| e.to_string())?;
+                            if retain {
+                                file.write_all(&bytes[..keep]).map_err(|e| e.to_string())?;
+                            }
                             written += keep as u64;
                             if keep < n {
                                 exceeded.store(true, Ordering::SeqCst);
@@ -183,12 +186,15 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
     let exceeded = Arc::new(AtomicBool::new(false));
     let failed = Arc::new(AtomicBool::new(false));
     let limit = spec["max_log_bytes"].as_u64().unwrap_or(16 * 1024 * 1024);
+    let retain = spec["retain_logs"].as_bool().unwrap_or(true);
+    state["logs_retained"] = json!(retain);
     let log_policy = spec["log_limit_policy"].as_str().unwrap_or("truncate");
     state["log_limit_policy"] = json!(log_policy);
     let out = capture(
         output,
         stdout,
         limit,
+        retain,
         stop.clone(),
         exceeded.clone(),
         failed.clone(),
@@ -198,6 +204,7 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
         errors,
         stderr,
         limit,
+        retain,
         stop.clone(),
         exceeded.clone(),
         failed.clone(),

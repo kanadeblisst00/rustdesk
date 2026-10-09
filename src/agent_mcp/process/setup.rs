@@ -100,6 +100,7 @@ pub(super) fn initialize(
         errors,
         log,
         LIMIT as u64,
+        spec["retain_logs"].as_bool().unwrap_or(true),
         stop.clone(),
         exceeded.clone(),
         failed.clone(),

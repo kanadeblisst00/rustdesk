@@ -10,7 +10,7 @@ fn bounded(text: &str, limit: usize) -> (&str, bool) {
     (&text[..end], end < text.len())
 }
 
-fn plain(text: &str) -> String {
+pub(super) fn plain(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut result = String::new();
     let (mut copied, mut i) = (0, 0);

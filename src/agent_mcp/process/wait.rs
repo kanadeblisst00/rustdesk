@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 pub(super) fn call(store: &Store, args: &Value) -> Result<Value, String> {
     let id = args["job_id"].as_str().ok_or("Missing job_id")?;
     let started = Instant::now();
-    let timeout = Duration::from_millis(args["timeout_ms"].as_u64().unwrap_or(1000).min(10000));
+    let timeout = Duration::from_millis(args["timeout_ms"].as_u64().unwrap_or(1000).min(60000));
     let mut job = store.status(id)?;
     let after_state = args.get("after_state").unwrap_or(&job["state"]).clone();
     let after_phase = args.get("after_phase").unwrap_or(&job["phase"]).clone();
@@ -38,15 +38,18 @@ pub(super) fn call(store: &Store, args: &Value) -> Result<Value, String> {
     };
     let mut output = json!({});
     for stream in ["stdout", "stderr", "setup"] {
-        output[stream] = store.call(
-            "read_process_output",
-            &json!({
+        let mut query = json!({
                 "job_id":id,"stream":stream,
                 "offset":args[format!("{stream}_offset")].as_u64().unwrap_or(0),
                 "max_bytes":args["max_bytes"].as_u64().unwrap_or(16384).clamp(1,32768),
-                "encoding":args["encoding"].as_str().unwrap_or("auto")
-            }),
-        )?;
+                "encoding":args["encoding"].as_str().unwrap_or("auto"),
+                "include_base64":args["include_base64"].as_bool().unwrap_or(true)
+            });
+        if let Some(lines) = args.get("tail_lines") {
+            query.as_object_mut().ok_or("Invalid output query")?.remove("offset");
+            query["tail_lines"] = lines.clone();
+        }
+        output[stream] = store.call("read_process_output", &query)?;
     }
     Ok(
         json!({"job":job,"event":event,"waited_ms":started.elapsed().as_millis() as u64,"output":output}),

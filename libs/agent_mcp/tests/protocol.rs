@@ -156,7 +156,7 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
     }
     assert_eq!(backend.calls.load(Ordering::Relaxed), 0);
     let tools = catalog::tools();
-    assert_eq!(tools.len(), if cfg!(feature = "local") { 67 } else { 63 });
+    assert_eq!(tools.len(), if cfg!(feature = "local") { 69 } else { 65 });
     for tool in tools
         .iter()
         .filter(|t| rustdesk_agent_mcp::automation::is_tool(t["name"].as_str().unwrap()))
@@ -250,7 +250,7 @@ fn durable_recovery_and_wait_schemas_are_bounded() {
     .unwrap();
     validate(
         "wait_for_process",
-        &json!({"session":"s","job_id":"original","timeout_ms":10000,"setup_offset":123}),
+        &json!({"session":"s","job_id":"original","timeout_ms":60000,"setup_offset":123}),
     )
     .unwrap();
     for (tool, args) in [
@@ -264,7 +264,7 @@ fn durable_recovery_and_wait_schemas_are_bounded() {
         ),
         (
             "wait_for_process",
-            json!({"session":"s","job_id":"original","timeout_ms":10001}),
+            json!({"session":"s","job_id":"original","timeout_ms":60001}),
         ),
         (
             "wait_for_process",
@@ -273,6 +273,25 @@ fn durable_recovery_and_wait_schemas_are_bounded() {
     ] {
         assert!(validate(tool, &args).is_err());
     }
+}
+
+#[test]
+fn process_observation_and_cleanup_options_are_bounded() {
+    use rustdesk_agent_mcp::process::validate;
+    for (tool, args) in [
+        ("wait_for_process", json!({"session":"s","job_id":"j","timeout_ms":60000,"tail_lines":5,"include_base64":false,"stdout_offset":20})),
+        ("read_remote_file", json!({"session":"s","path":"/tmp/log","tail_lines":3,"include_base64":false})),
+        ("remove_processes", json!({"session":"s","job_ids":["a","b"]})),
+    ] { validate(tool, &args).unwrap(); }
+    for (tool, args) in [
+        ("read_remote_file", json!({"session":"s","path":"/tmp/log","offset":0,"tail_lines":3})),
+        ("read_remote_file", json!({"session":"s","path":"/tmp/log","max_bytes":65537})),
+        ("remove_processes", json!({"session":"s","job_ids":["../escape"]})),
+        ("remove_processes", json!({"session":"s","job_ids":[]})),
+        ("remove_processes", json!({"session":"s","job_ids":vec!["job";65]})),
+    ] { assert!(validate(tool, &args).is_err()); }
+    let request = json!({"session":"s","job_id":"j","executable":"program","cwd":std::env::temp_dir(),"retain_logs":false});
+    validate("run_process", &request).unwrap();
 }
 
 #[test]
@@ -510,7 +529,7 @@ async fn long_polls_cannot_consume_control_request_capacity() {
             Some(TOKEN.into())
         }
         fn call(&self, name: &str, _: &Map<String, Value>) -> ToolResult {
-            if name == "wait_for_event" {
+            if matches!(name, "wait_for_event" | "wait_for_process") {
                 self.started.fetch_add(1, Ordering::SeqCst);
                 let deadline = Instant::now() + Duration::from_secs(3);
                 while !self.release.load(Ordering::SeqCst) && Instant::now() < deadline {
@@ -535,10 +554,10 @@ async fn long_polls_cannot_consume_control_request_capacity() {
     let backend = Arc::new(Waiting::default());
     let app = http::router(Arc::new(Server::new(backend.clone())));
     let mut waits = Vec::new();
-    for _ in 0..4 {
+    for i in 0..4 {
+        let (name, args) = if i % 2 == 0 { ("wait_for_event", json!({"session":"test","cursor":0,"timeout_ms":1000})) } else { ("wait_for_process", json!({"session":"test","job_id":"build","timeout_ms":60000})) };
         waits.push(tokio::spawn(app.clone().oneshot(tool_request(
-            "wait_for_event",
-            json!({"session":"test","cursor":0,"timeout_ms":1000}),
+            name, args,
         ))));
     }
     let deadline = Instant::now() + Duration::from_secs(1);

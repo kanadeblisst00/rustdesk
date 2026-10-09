@@ -60,6 +60,50 @@ fn corrupt_timeout_update_does_not_kill_the_command() {
 }
 
 #[test]
+fn compact_wait_tail_keeps_cursors_and_undecodable_bytes() {
+    let temp = Temp::new();
+    let store = temp.store();
+    store.create(&spec("compact"), |_| Ok(())).unwrap();
+    let dir = store.directory("compact").unwrap();
+    std::fs::write(dir.join("stdout.log"), b"old\nlast\n").unwrap();
+    std::fs::write(dir.join("stderr.log"), [0xff]).unwrap();
+    let result = store.call("wait_for_process", &json!({"job_id":"compact","timeout_ms":0,"tail_lines":1,"encoding":"utf-8","include_base64":false})).unwrap();
+    assert_eq!(result["output"]["stdout"]["text"], "last\n");
+    assert_eq!(result["output"]["stdout"]["offset"], 4);
+    assert_eq!(result["output"]["stdout"]["next_offset"], 9);
+    assert!(result["output"]["stdout"].get("data_base64").is_none());
+    assert_eq!(result["output"]["stderr"]["data_base64"], "/w==");
+}
+
+#[test]
+fn quiet_process_wait_can_exceed_ten_seconds() {
+    let temp = Temp::new();
+    let store = temp.store();
+    store.create(&spec("quiet"), |_| Ok(())).unwrap();
+    let result = store.call("wait_for_process", &json!({"job_id":"quiet","timeout_ms":10500})).unwrap();
+    assert_eq!(result["event"], "timeout");
+    assert!(result["waited_ms"].as_u64().unwrap() >= 10500);
+    assert_eq!(store.status("quiet").unwrap()["state"], "starting");
+}
+
+#[test]
+fn batch_removal_preserves_running_and_unknown_jobs() {
+    let temp = Temp::new();
+    let store = temp.store();
+    for (id, state) in [("done", "exited"), ("active", "running"), ("stale", "unknown")] {
+        let mut job = store.create(&spec(id), |_| Ok(())).unwrap();
+        job["state"] = json!(state);
+        store::write_json(&store.directory(id).unwrap().join("state.json"), &job).unwrap();
+    }
+    let result = store.call("remove_processes", &json!({"job_ids":["done","active","stale","missing"]})).unwrap();
+    assert_eq!(result["results"][0]["removed"], true);
+    for i in 1..4 { assert_eq!(result["results"][i]["removed"], false); }
+    assert!(!store.directory("done").unwrap().exists());
+    assert!(store.directory("active").unwrap().exists());
+    assert!(store.directory("stale").unwrap().exists());
+}
+
+#[test]
 fn durable_idempotency_and_conflicting_retries() {
     let temp = Temp::new();
     let store = temp.store();
@@ -478,6 +522,7 @@ fn workspace_bytes_upload_resume_checksum_download_and_reseal() {
     );
 }
 
+#[cfg(feature = "mcp")]
 #[tokio::test]
 async fn rejects_non_terminal_authorization_before_execution() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

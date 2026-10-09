@@ -1,0 +1,27 @@
+[package]
+name = "rustdesk-process-check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+base64 = "0.21"
+libc = "0.2"
+log = "0.4"
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "=1.3.4", features = ["v4"] }
+roxmltree = "0.20"
+rustdesk-agent-mcp = { path = "../../../libs/agent_mcp" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell"] }
+
+[[bin]]
+name = "process-worker"
+path = "main.rs"
+
+[workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("mcp"))'] }
