@@ -304,6 +304,12 @@ fn errors_resources_prompts_and_catalog_are_consistent() {
         ))
         .unwrap();
     assert_eq!(result["result"]["isError"], true);
+    let failure = &result["result"]["structuredContent"]["error"];
+    assert_eq!(failure["kind"], "tool_error");
+    assert_eq!(failure["tool"], "disconnect_device");
+    assert_eq!(failure["message"], "Remote permission denied");
+    assert!(failure["request_dispatched"].is_null());
+    assert!(failure["retryable"].is_null());
     let result = server
         .dispatch(request(
             "resources/read",
