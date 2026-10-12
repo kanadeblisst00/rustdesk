@@ -757,6 +757,10 @@ pub fn core_main() -> Option<Vec<String>> {
     }
     //_async_logger_holder.map(|x| x.flush());
     #[cfg(feature = "flutter")]
+    if !crate::main_window::prepare_args(&args) {
+        return None;
+    }
+    #[cfg(feature = "flutter")]
     return Some(flutter_args);
     #[cfg(not(feature = "flutter"))]
     return Some(args);
@@ -847,45 +851,12 @@ fn core_main_invoke_new_connection(mut args: std::env::Args) -> Option<Vec<Strin
         return None;
     }
 
-    #[cfg(target_os = "linux")]
-    return try_send_by_dbus(uni_links);
-
-    #[cfg(windows)]
-    {
-        use winapi::um::winuser::WM_USER;
-        let res = crate::platform::send_message_to_hnwd(
-            &crate::platform::FLUTTER_RUNNER_WIN32_WINDOW_CLASS,
-            &crate::get_app_name(),
-            (WM_USER + 2) as _, // referred from unilinks desktop pub
-            uni_links.as_str(),
-            false,
-        );
-        return if res { None } else { Some(Vec::new()) };
-    }
-    #[cfg(target_os = "macos")]
-    {
-        return if let Err(_) = crate::ipc::send_url_scheme(uni_links) {
-            Some(Vec::new())
-        } else {
-            None
-        };
-    }
+    crate::main_window::prepare(&uni_links).then(Vec::new)
 }
 
 #[cfg(all(target_os = "linux", feature = "flutter"))]
 fn try_send_by_dbus(uni_links: String) -> Option<Vec<String>> {
-    use crate::dbus::invoke_new_connection;
-
-    match invoke_new_connection(uni_links) {
-        Ok(()) => {
-            return None;
-        }
-        Err(err) => {
-            log::error!("{}", err.as_ref());
-            // return Some to invoke this url by self
-            return Some(Vec::new());
-        }
-    }
+    crate::main_window::prepare(&uni_links).then(Vec::new)
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

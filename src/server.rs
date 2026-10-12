@@ -680,13 +680,30 @@ pub async fn start_server(is_server: bool, no_server: bool) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "flutter"))]
 #[tokio::main(flavor = "current_thread")]
-pub async fn start_ipc_url_server() {
+pub async fn start_ipc_url_server(ready: std::sync::mpsc::SyncSender<bool>) {
     log::debug!("Start an ipc server for listening to url schemes");
     match crate::ipc::new_listener("_url").await {
         Ok(mut incoming) => {
-            while let Some(Ok(conn)) = incoming.next().await {
+            if ready.send(true).is_err() {
+                log::error!("Main window startup stopped before the URL listener became ready");
+                return;
+            }
+            // Reserve the endpoint before creating the window, then leave activations
+            // queued until Dart has installed its event handler and initialized the UI.
+            while !crate::main_window::URL_READY.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            while let Some(result) = incoming.next().await {
+                let conn = match result {
+                    Ok(conn) => conn,
+                    Err(error) => {
+                        log::error!("Failed to accept main window activation: {error}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
                 let mut conn = crate::ipc::Connection::new(conn);
                 match conn.next_timeout(1000).await {
                     Ok(Some(data)) => match data {
@@ -700,8 +717,8 @@ pub async fn start_ipc_url_server() {
                                 crate::flutter::APP_TYPE_MAIN,
                                 event,
                             ) {
-                                None => log::warn!("No main window app found!"),
-                                Some(..) => {}
+                                Some(true) => {}
+                                _ => log::error!("Failed to deliver main window activation"),
                             }
                         }
                         _ => {
@@ -717,6 +734,9 @@ pub async fn start_ipc_url_server() {
         }
         Err(err) => {
             log::error!("{}", err);
+            if let Err(error) = ready.send(false) {
+                log::error!("Cannot report URL listener startup failure: {error}");
+            }
         }
     }
 }

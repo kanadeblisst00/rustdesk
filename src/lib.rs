@@ -55,6 +55,8 @@ pub fn mcp_server_requested() -> bool {
 mod clipboard;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod core_main;
+#[cfg(all(feature = "flutter", not(any(target_os = "android", target_os = "ios"))))]
+mod main_window;
 mod custom_server;
 mod lang;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

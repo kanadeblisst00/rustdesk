@@ -170,6 +170,12 @@ void runMainApp(bool startService) async {
     windowManager.setTitle(getWindowName());
     // Do not use `windowManager.setResizable()` here.
     setResizable(!bind.isIncomingOnly());
+    // Accept activation only once the main event handler and window are ready.
+    if (isMacOS) {
+      await bind.mainStartIpcUrlServer();
+    } else if (isLinux) {
+      await bind.mainStartDbusServer();
+    }
   });
 }
 

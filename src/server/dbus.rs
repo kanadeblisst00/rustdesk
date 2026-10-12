@@ -10,7 +10,10 @@ use hbb_common::log;
 use std::collections::HashMap;
 use std::{error::Error, fmt, time::Duration};
 
+#[cfg(not(feature = "mcp"))]
 const DBUS_NAME: &str = "org.rustdesk.rustdesk";
+#[cfg(feature = "mcp")]
+const DBUS_NAME: &str = "org.rustdesk.rustdeskmcp";
 const DBUS_PREFIX: &str = "/dbus";
 const DBUS_METHOD_NEW_CONNECTION: &str = "NewConnection";
 const DBUS_METHOD_NEW_CONNECTION_ID: &str = "id";

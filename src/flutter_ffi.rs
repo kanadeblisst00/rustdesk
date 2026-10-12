@@ -2441,13 +2441,13 @@ pub fn cm_init() {
     crate::flutter::connection_manager::cm_init();
 }
 
-/// Start an ipc server for receiving the url scheme.
+/// Allow the reserved URL listener to deliver activations after the UI is ready.
 ///
 /// * Should only be called in the main flutter window.
 /// * macOS only
 pub fn main_start_ipc_url_server() {
     #[cfg(target_os = "macos")]
-    std::thread::spawn(move || crate::server::start_ipc_url_server());
+    crate::main_window::URL_READY.store(true, std::sync::atomic::Ordering::Release);
 }
 
 pub fn main_test_wallpaper(_second: u64) {
