@@ -296,3 +296,18 @@ worker 位于被控端。Mac 控制 Windows 时，修复作业收尾需要更新
 后端返回的工具执行错误现在始终包含 `isError:true`、原有文本和 `structuredContent.error`。保留原有连接/认证/服务/请求超时错误分类，其他错误使用 `kind:tool_error`，并附 `tool`、`stage`、`session`、`job_id`、`request_dispatched`、`retryable`、`request_replayed` 和 `recovery`。无法从后端字符串证明请求是否已派发或是否可安全重试时，两字段为 `null`，不得当作 `false` 或自动重试依据。JSON-RPC 格式错误与参数校验错误继续使用协议层 `error`，不伪装成成功工具调用。
 
 错误回包的回归面仅为 `libs/agent_mcp/src/errors.rs` 和 `src/lib.rs` 的工具错误入口；不更改后端执行、HTTP 状态和 JSON-RPC 校验。协议回归验证普通权限错误也携带结构化结果，且不复制命令环境或密码参数。
+
+`connect_device` 复用已有会话时，若连接轮次已明确断开，会通过既有 `reconnect` 启动新一轮连接并应用 `force_relay`，保留原 UUID。正在连接、认证或已连接的会话不重复重连。`authentication:disconnected` 区分传输断开与认证进行中；`wait_timed_out:true` 只表示本次连接/认证等待窗口耗尽，不表示远端作业超时。`recover_processes` 也识别连接轮次断开，不必等旧发送通道被丢弃。
+
+重连回归面：`src/agent_mcp/session.rs` 的连接复用及状态回包、`auth.rs` 的等待结束判断、`process/recovery.rs` 的断线判断；`src/ui_session_interface.rs` 只增加 MCP 条件编译的只读状态访问器，供这些入口使用，不修改普通 UI 重连实现。`auth/tests.rs` 增加等待超时、旧轮次隔离及原 UUID 重连测试。沿用原有认证流程，不重放远程作业命令。
+
+本轮验证在 Mac 完成，没有部署或连接原 Windows 设备：
+
+- 独立协议库 `cargo test --locked --offline`：41 项通过。
+- 临时验证入口直接包含仓库生产进程模块：50 项通过，包含实际启动子进程、无输出超过 30 秒、最终结果恢复、取消和进程树清理。故障注入用例在修复前报最终落盘错误，修复后通过。
+- 该入口构建后运行 Python worker 专项：12 项通过、8 项 Windows 专用用例跳过；Python 工具套件 61 项通过、26 项按环境跳过。测试夹具 7 项通过。
+- Windows 生产进程模块及测试使用 `windows 0.61.3`、`x86_64-pc-windows-gnu` 交叉类型检查通过；未执行 Windows 程序。
+- 从当前源码提取连接轮次、连接复用、状态和等待函数，在替代网络/窗口外部依赖的临时夹具运行 4 项检查，均通过。删除新增重连调用后对应测试失败。该检查不替代完整桌面集成测试和真实网络断线验收。
+- 完整 `cargo test --locked --features mcp --lib agent_mcp::` 因 GitHub 依赖拉取反复出现 `curl 18` / `early EOF` 未完成。浅拉取恢复一项依赖后，又持续等待 `wezterm`；已停止仅属于本次测试的构建进程并保留日志。仓库新增认证集成测试及 Windows 文件共享测试仍需在具备依赖的构建环境执行。
+
+原会话的 `0x80070005` 缺少具体 API、当时运行二进制版本及完整 worker 记录，不能断言就是此次复现的状态文件替换问题。已有心跳监控容错于 `[历史提交编号已移除]` 引入；当前源码与部署版本需要分别核对。SDK 运行库配置、PowerShell 转发引用和台账审批问题不作为 RustDesk 缺陷处理。

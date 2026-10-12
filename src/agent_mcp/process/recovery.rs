@@ -41,7 +41,8 @@ pub(in super::super) fn call(args: &Map<String, Value>) -> ToolResult {
             .read()
             .unwrap()
             .as_ref()
-            .is_some_and(|tx| tx.is_closed());
+            .is_some_and(|tx| tx.is_closed())
+            || s.connection_round_state.lock().unwrap().is_disconnected();
         if reconnect && can_reconnect(&info, closed) {
             s.reconnect(flag(args, "force_relay"));
         }
