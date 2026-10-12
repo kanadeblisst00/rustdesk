@@ -47,8 +47,9 @@ pub(super) fn list() -> Vec<Value> {
 }
 
 pub(super) fn info(id: SessionID, s: &FlutterSession) -> Value {
+    let disconnected = s.connection_round_state.lock().unwrap().is_disconnected();
     let lc = s.lc.read().unwrap();
-    let connected = lc.peer_info.is_some()
+    let connected = !disconnected && lc.peer_info.is_some()
         && s.sender
             .read()
             .unwrap()
@@ -65,8 +66,8 @@ pub(super) fn info(id: SessionID, s: &FlutterSession) -> Value {
         .unwrap_or_default();
     json!({"session":id.to_string(),"device_id":lc.get_id(),
         "kind":if lc.conn_type==ConnType::TERMINAL{"terminal"}else if lc.conn_type==ConnType::FILE_TRANSFER{"files"}else{"desktop"},
-        "connected":connected,"needs_password":!connected && lc.agent_auth.needs_password(),
-        "authentication":if connected {"authenticated"} else {lc.agent_auth.name()},
+        "connected":connected,"needs_password":!disconnected && !connected && lc.agent_auth.needs_password(),
+        "authentication":if disconnected {"disconnected"} else if connected {"authenticated"} else {lc.agent_auth.name()},
         "displays":displays,"current_display":lc.peer_info.as_ref().map(|p|p.current_display),
         "platform":lc.peer_info.as_ref().map(|p|p.platform.clone()),
         "permissions":{"keyboard":*s.server_keyboard_enabled.read().unwrap(),
@@ -100,6 +101,9 @@ pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {
     if let Some(s) = sessions::get_session_by_peer_id(peer.into(), conn) {
         if let Some(id) = s.agent_session_ids().first().copied() {
             track(id, false)?;
+            if s.connection_round_state.lock().unwrap().is_disconnected() {
+                s.reconnect(flag(args, "force_relay"));
+            }
             return super::auth::wait_for_session(id, &s, args);
         }
     }
@@ -161,8 +165,9 @@ pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {
         if let Some(s) = sessions::get_session_by_peer_id(peer.into(), conn) {
             if let Some(id) = s.agent_session_ids().first().copied() {
                 track(id, headless)?;
-                let details = info(id, &s);
+                let mut details = info(id, &s);
                 if super::auth::settled(&details) {
+                    details["wait_timed_out"] = json!(false);
                     return Ok(success(details));
                 }
                 found = Some(details);
@@ -171,7 +176,10 @@ pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {
         std::thread::sleep(Duration::from_millis(100));
     }
     found
-        .map(success)
+        .map(|mut details| {
+            details["wait_timed_out"] = json!(!super::auth::settled(&details));
+            success(details)
+        })
         .ok_or_else(|| "RustDesk did not create a session before timeout".into())
 }
 

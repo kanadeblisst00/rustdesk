@@ -95,6 +95,7 @@ pub(super) fn settled(details: &serde_json::Value) -> bool {
                     | "os_login_required"
                     | "os_login_and_password_required"
                     | "failed"
+                    | "disconnected"
             )
         )
 }
@@ -112,8 +113,9 @@ pub(super) fn wait_for_session(
         if !Arc::ptr_eq(session, &current) {
             return Err("Session changed while waiting for authentication".into());
         }
-        let details = super::session::info(id, &current);
+        let mut details = super::session::info(id, &current);
         if settled(&details) || std::time::Instant::now() >= deadline {
+            details["wait_timed_out"] = serde_json::json!(!settled(&details));
             return Ok(super::success(details));
         }
         std::thread::sleep(std::time::Duration::from_millis(100));

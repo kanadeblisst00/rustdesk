@@ -132,6 +132,11 @@ impl ConnectionRoundState {
     pub fn is_connected(&self) -> bool {
         matches!(self.state, ConnectionState::Connected)
     }
+
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    pub(crate) fn is_disconnected(&self) -> bool {
+        matches!(self.state, ConnectionState::Disconnected)
+    }
 }
 
 impl Default for ConnectionRoundState {

@@ -106,6 +106,53 @@ fn connect(timeout: u64) -> Value {
         .clone()
 }
 
+#[test]
+fn disconnected_transport_is_not_authentication_and_wait_expiry_is_explicit() {
+    if !isolated("disconnected_transport_is_not_authentication_and_wait_expiry_is_explicit") {
+        return;
+    }
+    let (id, s, _rx) = terminal();
+    begin(&s.lc);
+    let args = json!({"timeout_ms":0});
+    let waiting = wait_for_session(id, &s, args.as_object().unwrap()).unwrap();
+    assert_eq!(waiting["structuredContent"]["authentication"], "authenticating");
+    assert_eq!(waiting["structuredContent"]["wait_timed_out"], true);
+    s.lc.write().unwrap().peer_info = Some(PeerInfo::default());
+    let ready = wait_for_session(id, &s, args.as_object().unwrap()).unwrap();
+    assert_eq!(ready["structuredContent"]["connected"], true);
+    assert_eq!(ready["structuredContent"]["wait_timed_out"], false);
+    s.connection_round_state.lock().unwrap().set_disconnected(0);
+    let closed = wait_for_session(id, &s, args.as_object().unwrap()).unwrap();
+    assert_eq!(closed["structuredContent"]["connected"], false);
+    assert_eq!(closed["structuredContent"]["authentication"], "disconnected");
+    assert_eq!(closed["structuredContent"]["wait_timed_out"], false);
+    let mut round = s.connection_round_state.lock().unwrap();
+    let current = round.new_round();
+    assert!(!round.is_disconnected());
+    assert!(!round.set_disconnected(current - 1));
+    assert!(!round.is_disconnected());
+}
+
+#[test]
+fn connect_restarts_a_disconnected_round_and_preserves_the_session() {
+    if !isolated("connect_restarts_a_disconnected_round_and_preserves_the_session") {
+        return;
+    }
+    let s = FlutterSession::default();
+    s.lc.write().unwrap().initialize(
+        "127.0.0.1:1".into(), ConnType::TERMINAL, None, false, None, None, None,
+    );
+    let id = SessionID::new_v4();
+    sessions::insert_session(id, ConnType::TERMINAL, s.clone());
+    s.connection_round_state.lock().unwrap().set_disconnected(0);
+    let args = json!({"device_id":"127.0.0.1:1","kind":"terminal","headless":true,"force_relay":true,"timeout_ms":0});
+    let result = session::connect(args.as_object().unwrap()).unwrap();
+    assert_eq!(result["structuredContent"]["session"], id.to_string());
+    assert_eq!(s.reconnect_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(s.lc.read().unwrap().force_relay);
+    assert_eq!(session::list().len(), 1);
+}
+
 #[tokio::test]
 async fn cached_password_challenge_waits_for_authentication_in_reused_session() {
     if !isolated("cached_password_challenge_waits_for_authentication_in_reused_session") {
