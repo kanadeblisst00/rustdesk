@@ -138,7 +138,15 @@ impl Store {
 
     pub fn status(&self, id: &str) -> Result<Value, String> {
         let dir = self.directory(id)?;
-        let mut state = read_json(&dir.join("state.json"))?;
+        let mut state = if dir.join("result.json").try_exists().map_err(|e| e.to_string())? {
+            let result = read_json(&dir.join("result.json"))?;
+            if !terminal(&result) || result["job_id"] != id {
+                return Err("Invalid final job record".into());
+            }
+            result
+        } else {
+            read_json(&dir.join("state.json"))?
+        };
         state["last_known_state"] = state["state"].clone();
         state["observed_at_ms"] = json!(now());
         state["heartbeat_age_ms"] = json!(now().saturating_sub(state["updated_at_ms"].as_u64().unwrap_or(0)));
