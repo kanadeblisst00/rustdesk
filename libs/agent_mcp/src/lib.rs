@@ -127,7 +127,7 @@ impl Server {
                 };
                 match self.call(context, name, args) {
                     Ok(v) => v,
-                    Err(e) => errors::tool_failure(e, args),
+                    Err(e) => errors::tool_failure(name, e, args),
                 }
             }
             "resources/list" => json!({"resources":[

@@ -292,3 +292,7 @@ worker 位于被控端。Mac 控制 Windows 时，修复作业收尾需要更新
 本轮针对最终状态无法替换的故障注入、32 秒无输出心跳、存储对象重新创建后的状态恢复和中文 UTF-8 分页原始字节重组补充回归。Windows 实际 worker 用例还覆盖外部读句柄持续阻止状态替换直至命令退出。跨页字符仍以 `data_base64` 和字节 `next_offset` 无损拼接，再按生产者编码解码；每页 `text:null` 不表示日志为空。
 
 回归面：`process/worker.rs` 仅增加最终写入失败的备用落盘；`process/store.rs` 仅在存在备用结果时优先读取并校验任务 ID 和终态。正常写入路径、运行/取消/超时策略保持原实现；`process/tests.rs` 与 Python worker 测试增加上述验证。
+
+后端返回的工具执行错误现在始终包含 `isError:true`、原有文本和 `structuredContent.error`。保留原有连接/认证/服务/请求超时错误分类，其他错误使用 `kind:tool_error`，并附 `tool`、`stage`、`session`、`job_id`、`request_dispatched`、`retryable`、`request_replayed` 和 `recovery`。无法从后端字符串证明请求是否已派发或是否可安全重试时，两字段为 `null`，不得当作 `false` 或自动重试依据。JSON-RPC 格式错误与参数校验错误继续使用协议层 `error`，不伪装成成功工具调用。
+
+错误回包的回归面仅为 `libs/agent_mcp/src/errors.rs` 和 `src/lib.rs` 的工具错误入口；不更改后端执行、HTTP 状态和 JSON-RPC 校验。协议回归验证普通权限错误也携带结构化结果，且不复制命令环境或密码参数。
