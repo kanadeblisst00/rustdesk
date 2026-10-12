@@ -14,7 +14,7 @@ EXECUTABLE = os.environ.get("RUSTDESK_MCP_TEST_EXECUTABLE")
 
 @unittest.skipUnless(EXECUTABLE, "set RUSTDESK_MCP_TEST_EXECUTABLE to a built MCP executable")
 class ProcessWorkerTest(unittest.TestCase):
-    def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False, descendant=False, request_overrides=None, close_transport=False):
+    def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False, descendant=False, request_overrides=None, close_transport=False, block_state=False):
         with tempfile.TemporaryDirectory(prefix="mcp-worker-") as directory:
             root = Path(directory)
             job = root / "job"
@@ -30,6 +30,7 @@ class ProcessWorkerTest(unittest.TestCase):
             stdio = subprocess.PIPE if close_transport else subprocess.DEVNULL
             process = subprocess.Popen([EXECUTABLE, "--mcp-process-worker", str(job)],
                                        stdin=stdio, stdout=stdio, stderr=stdio)
+            state_reader = None
             try:
                 deadline = time.monotonic() + 30
                 cancellation_sent = False
@@ -40,6 +41,13 @@ class ProcessWorkerTest(unittest.TestCase):
                     if cancel and (root / "started").is_file() and not cancellation_sent:
                         (job / "cancel.json").write_text("{}", encoding="utf-8")
                         cancellation_sent = True
+                    if block_state and (root / "started").is_file() and state_reader is None:
+                        try:
+                            state_reader = (job / "state.json").open("rb")
+                        except PermissionError:
+                            pass  # Retry if the worker is replacing the record at this instant.
+                        else:
+                            (root / "state_locked").write_text("ready", encoding="utf-8")
                     if close_transport and (root / "started").is_file() and not transport_closed:
                         for stream in (process.stdin, process.stdout, process.stderr):
                             stream.close()
@@ -53,7 +61,8 @@ class ProcessWorkerTest(unittest.TestCase):
                 if close_transport:
                     self.assertTrue(transport_closed, "Worker did not reach the disconnection barrier")
                 # Python's Windows file handles conflict with the worker's state replacement.
-                state = json.loads((job / "state.json").read_text(encoding="utf-8"))
+                final_path = job / "result.json"
+                state = json.loads((final_path if final_path.exists() else job / "state.json").read_text(encoding="utf-8"))
                 result = {"state": state, "stdout": (job / "stdout.log").read_bytes(),
                           "stderr": (job / "stderr.log").read_bytes()}
                 if descendant:
@@ -62,6 +71,8 @@ class ProcessWorkerTest(unittest.TestCase):
                     self.assertFalse((root / "leaked").exists(), "Grandchild survived task cleanup")
                 return result
             finally:
+                if state_reader is not None:
+                    state_reader.close()
                 if close_transport:
                     for stream in (process.stdin, process.stdout, process.stderr):
                         stream.close()
@@ -117,6 +128,19 @@ class ProcessWorkerTest(unittest.TestCase):
         self.assertEqual(result["state"]["monitor_warning"]["operation"], "MoveFileExW")
         self.assertTrue(result["state"]["monitor_warning"]["target"].endswith("state.json"))
         self.assertIn(b"survived-state-reader", result["stdout"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows final record sharing")
+    def test_exit_is_saved_while_an_external_reader_blocks_state_replacement(self):
+        result = self.run_worker(
+            "import pathlib,time,sys; pathlib.Path('started').write_text('ready'); "
+            "\nwhile not pathlib.Path('state_locked').exists(): time.sleep(0.02)\n"
+            "time.sleep(2); print('all-checks-complete'); sys.exit(7)", block_state=True)
+        self.assertEqual(result["state"]["state"], "exited", result)
+        self.assertEqual(result["state"]["exit_code"], 7)
+        self.assertFalse(result["state"]["termination_requested"])
+        self.assertEqual(result["state"]["monitor_warning"]["stage"], "completion_write")
+        self.assertEqual(result["state"]["monitor_warning"]["operation"], "MoveFileExW")
+        self.assertIn(b"all-checks-complete", result["stdout"])
 
     @unittest.skipUnless(sys.platform == "win32", "Windows explicit shell grammar")
     def test_windows_shells_preserve_quoted_paths_and_scripts(self):

@@ -110,7 +110,11 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
     }
     state["updated_at_ms"] = json!(store::now());
     state["finished_at_ms"] = json!(store::now());
-    store::write_json_detailed(&dir.join("state.json"), &state).map_err(|e| e.to_string())?;
+    if let Err(error) = store::write_json_detailed(&dir.join("state.json"), &state) {
+        error.warn(&mut state, "completion_write");
+        // A reader can deny replacement of state.json on Windows even after the command exits.
+        store::write_json_detailed(&dir.join("result.json"), &state).map_err(|e| e.to_string())?;
+    }
     super::workspace::release(dir)
 }
 

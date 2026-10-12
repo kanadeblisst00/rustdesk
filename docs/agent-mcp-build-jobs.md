@@ -273,10 +273,22 @@ publish_artifact({
 - `run_process` / `run_workspace_process` 的 `retain_logs:false`：stdout/stderr/setup 只读取、丢弃，不把内容写入日志；原有字节上限及超限策略仍生效。请求参数、环境覆盖和任务状态仍保留，完成后用 `remove_process` / `remove_processes` 删除。不会自动删除旧任务。
 - PowerShell 已有 `-NoProfile`，现在默认设置 `$ProgressPreference='SilentlyContinue'`，然后单独解析调用方脚本，保持开头 `using` / `param` 声明可用。脚本可以主动覆盖偏好。参考 [Microsoft PowerShell 偏好变量](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_preference_variables?view=powershell-5.1#progresspreference)。GBK 自动回退原已存在；不将所有失败都强行解释为 GBK。
 - 心跳写盘失败、退出状态观察失败和超时更新读取失败不再立即清理任务。心跳失败记录在 `monitor_warning`（operation/target/stage/OS 或 HRESULT）和计数中，下次可写盘时保存。持久写盘失败仍可能导致观察到 `unknown`；这不意味着任务已终止。日志收集失败、显式取消、执行超时和显式超限终止仍清理进程树。
-- Windows 状态文件替换对 access denied/sharing/lock violation 做最多 200ms 的短重试。最终状态仍无法写入时明确报错，不宣称结果已持久化。
+- Windows 状态文件替换对 access denied/sharing/lock violation 做最多 200ms 的短重试。最终状态写入失败的恢复见下方 2026-10-12 补充。
 - Windows `get_environment.user.privileges.elevated` 以及任务 `execution_identity.privileges.elevated` 返回实际授权令牌的提权状态；无法观察时为 null 并附 error，不回退为 SYSTEM。
 - `terminal_output(strip_ansi:true, include_base64:false)` 清理完整 ANSI CSI/OSC 序列并减少返回体。原始字节游标不变；不模拟屏幕重绘，也不会丢弃无法解码的原始字节。
 
 一次性读取示例：`read_remote_file(session, path, tail_lines:20, max_bytes:8192, encoding:"cp936", include_base64:false)`。请先远端筛选/脱敏敏感日志，本工具不会自动脱敏。
 
 详细评估和未实现项目见 [本轮反馈评估](agent-mcp-agent-feedback-2026-10-09.md)。
+
+## 2026-10-12 作业收尾修复
+
+worker 位于被控端。Mac 控制 Windows 时，修复作业收尾需要更新 Windows MCP 构建；只更新 Mac 控制端不能改变远端 worker。
+
+最终 `state.json` 替换失败时，worker 记录 `monitor_warning.stage:completion_write`，将完整最终状态原子保存到独立的 `result.json`。状态查询、任务列表、等待、同 ID 恢复和完成后删除均识别该记录；保留原退出码、终止原因和日志信息，不重跑命令。两处写入都失败时仍明确报错，不根据日志内容猜测成功。此机制不能补回旧 worker 已丢失的退出码，也不能保证在磁盘不可写或 worker 被强杀时产生结果。
+
+日志读取原已在独立线程，心跳不依赖是否产生输出。当前代码也已将心跳写入失败、`try_wait` 失败改为监控警告；它们不会直接变成 `worker_failure` 并清理命令。取消、执行超时、显式日志超限和日志收集失败仍沿用进程树清理策略。Windows 文件共享模式会影响重命名/替换，参见 [Microsoft CreateFileW 的共享标志说明](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)；单独一个 `0x80070005` 不能确定本次原事件的具体 API 或权限根因。
+
+本轮针对最终状态无法替换的故障注入、32 秒无输出心跳、存储对象重新创建后的状态恢复和中文 UTF-8 分页原始字节重组补充回归。Windows 实际 worker 用例还覆盖外部读句柄持续阻止状态替换直至命令退出。跨页字符仍以 `data_base64` 和字节 `next_offset` 无损拼接，再按生产者编码解码；每页 `text:null` 不表示日志为空。
+
+回归面：`process/worker.rs` 仅增加最终写入失败的备用落盘；`process/store.rs` 仅在存在备用结果时优先读取并校验任务 ID 和终态。正常写入路径、运行/取消/超时策略保持原实现；`process/tests.rs` 与 Python worker 测试增加上述验证。

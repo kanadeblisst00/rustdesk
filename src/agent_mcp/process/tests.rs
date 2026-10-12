@@ -45,6 +45,94 @@ fn failed_heartbeat_does_not_change_command_state_or_request_termination() {
 
 #[test]
 #[cfg(unix)]
+fn final_result_survives_an_unreplaceable_state_and_is_never_replayed() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let mut request = shell_spec("blocked-state", "while ! mkdir state.json 2>/dev/null; do rm -f state.json; done; printf complete; exit 7");
+    request["cwd"] = json!(store.directory("blocked-state").unwrap());
+    store.create(&request, |_| Ok(())).unwrap();
+    let dir = store.directory("blocked-state").unwrap();
+    worker::run(&dir).unwrap();
+    assert!(dir.join("state.json").is_dir());
+    assert!(dir.join("result.json").is_file());
+    let restored = temp.store();
+    let result = restored.create(&request, |_| panic!("must not replay")).unwrap();
+    assert_eq!(result["state"], "exited");
+    assert_eq!(result["exit_code"], 7);
+    assert_eq!(result["success"], false);
+    assert_eq!(result["termination_requested"], false);
+    assert_eq!(result["monitor_warning"]["stage"], "completion_write");
+    let wait = restored.call("wait_for_process", &json!({"job_id":"blocked-state","timeout_ms":0})).unwrap();
+    assert_eq!(wait["event"], "completed");
+    assert_eq!(wait["output"]["stdout"]["text"], "complete");
+    assert_eq!(wait["output"]["stdout"]["eof"], true);
+    assert_eq!(restored.list().unwrap()["jobs"][0]["exit_code"], 7);
+    restored.call("remove_process", &json!({"job_id":"blocked-state"})).unwrap();
+    assert!(!dir.exists());
+}
+
+#[test]
+fn invalid_final_record_never_claims_a_successful_exit() {
+    let temp = Temp::new();
+    let store = temp.store();
+    store.create(&spec("final"), |_| Ok(())).unwrap();
+    for result in [json!({"job_id":"other","state":"exited","exit_code":0}),
+                   json!({"job_id":"final","state":"running"})] {
+        store::write_json(&store.directory("final").unwrap().join("result.json"), &result).unwrap();
+        assert!(store.status("final").unwrap_err().contains("Invalid final job record"));
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn silent_command_keeps_heartbeat_then_recovers_exit_after_store_recreation() {
+    let temp = Temp::new();
+    let store = temp.store();
+    store.create(&shell_spec("silent", "sleep 32; exit 0"), |_| Ok(())).unwrap();
+    let dir = store.directory("silent").unwrap();
+    let worker = std::thread::spawn(move || worker::run(&dir));
+    let restored = temp.store();
+    let start = Instant::now();
+    let mut heartbeats = std::collections::HashSet::new();
+    loop {
+        let state = restored.status("silent").unwrap();
+        assert_ne!(state["state"], "unknown", "{state}");
+        assert_eq!(state["stdout_bytes"], 0);
+        heartbeats.insert(state["updated_at_ms"].as_u64().unwrap());
+        if store::terminal(&state) {
+            assert_eq!(state["exit_code"], 0);
+            assert_eq!(state["success"], true);
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(45));
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    worker.join().unwrap().unwrap();
+    assert!(heartbeats.len() > 20);
+}
+
+#[test]
+fn chinese_log_byte_pages_round_trip_without_loss() {
+    use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+    let temp = Temp::new();
+    let store = temp.store();
+    store.create(&spec("chinese"), |_| Ok(())).unwrap();
+    let original = "编译完成：中文日志\n".as_bytes();
+    std::fs::write(store.directory("chinese").unwrap().join("stdout.log"), original).unwrap();
+    let mut offset = 0;
+    let mut bytes = Vec::new();
+    while offset < original.len() as u64 {
+        let page = store.call("read_process_output", &json!({"job_id":"chinese","stream":"stdout","offset":offset,"max_bytes":2,"encoding":"utf-8","include_base64":false})).unwrap();
+        assert!(page["text"].is_null());
+        assert!(page["decoding_error"].is_string());
+        bytes.extend(STANDARD.decode(page["data_base64"].as_str().unwrap()).unwrap());
+        offset = page["next_offset"].as_u64().unwrap();
+    }
+    assert_eq!(bytes, original);
+}
+
+#[test]
+#[cfg(unix)]
 fn corrupt_timeout_update_does_not_kill_the_command() {
     let temp = Temp::new();
     let store = temp.store();
