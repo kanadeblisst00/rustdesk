@@ -697,6 +697,10 @@ fn unsafe_get_cursor_data(hcursor: u64) -> ResultType<CursorData> {
 }
 
 fn get_active_user(t: &str) -> String {
+    match console_user::get_active_user() {
+        Ok((name, uid)) => return if t == "-n" { uid.to_string() } else { name },
+        Err(error) => log::warn!("Failed to query the macOS console user: {}", error),
+    }
     if let Ok(output) = std::process::Command::new("ls")
         .args(vec![t, "/dev/console"])
         .output()
@@ -709,6 +713,9 @@ fn get_active_user(t: &str) -> String {
     }
     "".to_owned()
 }
+
+#[path = "macos_console_user.rs"]
+mod console_user;
 
 pub fn get_active_username() -> String {
     get_active_user("-l")
