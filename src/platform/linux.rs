@@ -1352,15 +1352,14 @@ fn is_flatpak() -> bool {
     std::path::PathBuf::from("/.flatpak-info").exists()
 }
 
+#[path = "linux_session_user.rs"]
+mod session_user;
+
 pub fn is_prelogin() -> bool {
     if is_flatpak() {
         return false;
     }
-    let name = get_active_username();
-    if let Ok(res) = run_cmds(&format!("getent passwd {}", name)) {
-        return res.contains("/bin/false") || res.contains("/usr/sbin/nologin");
-    }
-    false
+    session_user::is_prelogin(&get_active_username())
 }
 
 // Check "Lock".
