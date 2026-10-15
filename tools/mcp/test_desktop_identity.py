@@ -124,7 +124,8 @@ class DesktopIdentityTest(unittest.TestCase):
                             package.package_macos(app)
                         run.assert_not_called()
                         continue
-                    package.package_macos(app)
+                    with patch.dict(os.environ, {"MCP_MACOS_SIGN_IDENTITY": "A" * 40}):
+                        package.package_macos(app)
                     calls = [c.args[0] for c in run.call_args_list]
                     self.assertEqual(calls[0][1], "--mcp-identity-info")
                     self.assertEqual(Path(calls[1][-1]).name, "service")

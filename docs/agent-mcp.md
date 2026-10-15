@@ -15,7 +15,7 @@ Windows、macOS 14+ 和 Linux X11 本机桌面控制需额外启用 `mcp-local`�
 
 ### GitHub Actions 多平台构建
 
-在自己的 fork 中打开 **Actions → MCP desktop build → Run workflow**，选择包含 MCP 改动的分支（通常是 `master`），再点击 **Run workflow**。工作流文件是 `.github/workflows/agent-mcp-build.yml`，只手动触发，不需要签名密钥或仓库写权限，不创建标签或发布 Release。
+在自己的 fork 中打开 **Actions → MCP desktop build → Run workflow**，选择包含 MCP 改动的分支（通常是 `master`），再点击 **Run workflow**。工作流文件是 `.github/workflows/agent-mcp-build.yml`，只手动触发，不需要仓库写权限，不创建标签或发布 Release。普通 macOS 包需要预先配置下述固定签名证书。
 
 桥接代码生成后，会在对应系统的 GitHub runner 上构建五种桌面版本，实际编译参数包含 `--flutter --mcp`：
 
@@ -77,6 +77,26 @@ MCP HTTP 默认仍为 `127.0.0.1:59940`。可选的 IP 直连监听默认改为 
 官方更新源不会更新 MCP 应用；升级时重新构建并安装 MCP 包。当前 MCP Linux 产物为 Debian 包和 TAR.GZ 应用目录，支持 x64、ARM64；`--package`、`--drm` 及 Arch/RPM 打包入口会明确拒绝 MCP 参数，避免产出覆盖官方版的混合安装包。
 
 打包会执行 `--mcp-identity-info` 校验原生身份、配置/IPC 路径和端口，防止 `--skip-cargo` 混入普通库。macOS 同时修改主程序文件名、Info.plist、URL scheme 并重新签名，再输出 `RustDeskMCP.app`；保持 Xcode 各依赖 target 的产品名称，避免全局覆盖 PRODUCT_NAME 使 framework 产物冲突。Windows/Linux 使用构建子进程环境 `RUSTDESK_MCP_BUILD=1` 设置 Flutter 外壳身份，不改变后续普通构建的环境。切换构建身份时应清理旧的 Flutter 构建目录，打包校验会拒绝残留的官方可执行文件。
+
+### macOS 更新时保留权限
+
+普通 MCP 包必须持续使用同一张代码签名证书和私钥。旧的 ad-hoc 签名把应用身份绑定到构建哈希，更新后即使系统设置仍显示已授权，新程序也可能不符合旧授权的身份要求。现在缺少证书时打包会失败，不再静默退回 ad-hoc 签名。主应用与 `service` 分别固定签名标识为 `com.carriez.RustDeskMCP` 和 `com.carriez.RustDeskMCP.service`。
+
+自用可使用长期保存的自签名代码签名证书；无需将它设置成系统信任的根证书。证书和私钥保存在仓库外，并保留加密备份及安全保存的解锁密码。不能在每次构建时重新生成证书。此流程不包含发行公证或可信时间戳；更换、遗失或过期证书仍可能需要重新授权。
+
+在 GitHub 仓库的 Actions secrets 中配置以下三项（Intel 与 Apple Silicon 共用）：
+
+| Secret | 内容 |
+| --- | --- |
+| `MCP_MACOS_CERTIFICATE_P12` | 含证书和私钥的加密 `.p12` 文件的单行 Base64 |
+| `MCP_MACOS_CERTIFICATE_PASSWORD` | 该 `.p12` 的解锁密码 |
+| `MCP_MACOS_SIGN_IDENTITY` | 证书的 40 位 SHA-1 指纹（无冒号） |
+
+工作流仅在普通 macOS 构建中导入临时钥匙串，构建结束后清理。不要把 `.p12`、密码或解码后的私钥写入仓库、产物或日志。`isolated_macos` 测试包保留独立的原有签名流程。
+
+本地构建先解锁保存证书的钥匙串，将其加入用户钥匙串搜索列表，再设置 `MCP_MACOS_SIGN_IDENTITY`；使用专用钥匙串时还需设置 `MCP_MACOS_SIGN_KEYCHAIN` 为其绝对路径，然后运行原构建命令。可执行 `python3 -m unittest discover -s tools/mcp -p test_macos_signing.py -v` 验证两次不同构建满足同一个签名身份要求，且同 Bundle ID 的临时签名替换品会被拒绝。
+
+从旧 ad-hoc 包首次迁移到固定证书时，需要重新授予一次屏幕录制和辅助功能权限。若旧条目失效，退出应用后仅重置该 Bundle 的 `ScreenCapture` 与 `Accessibility` 授权，再打开 `/Applications/RustDeskMCP.app` 并在系统设置中授权、重启应用；不要重置其他应用或整个 TCC 数据库。
 
 ### 与正在使用的 macOS 版本隔离测试
 

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -39,6 +40,18 @@ def verify_binary(binary):
     validate_native_info(json.loads(result.stdout))
 
 
+def macos_signing_options():
+    identity = os.environ.get("MCP_MACOS_SIGN_IDENTITY", "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", identity):
+        raise ValueError("MCP_MACOS_SIGN_IDENTITY must be the SHA-1 fingerprint of a persistent "
+                         "code-signing certificate; ad-hoc signing loses macOS permissions on updates")
+    options = ["--force", "--sign", identity, "--timestamp=none"]
+    keychain = os.environ.get("MCP_MACOS_SIGN_KEYCHAIN")
+    if keychain:
+        options.extend(["--keychain", keychain])
+    return options
+
+
 def package_macos(app):
     app = Path(app).resolve(strict=True)
     if app.name != "RustDesk.app" or app.parent.name != "Release":
@@ -52,6 +65,7 @@ def package_macos(app):
     if info.get("CFBundleIdentifier") != BUNDLE_ID or info.get("CFBundleExecutable") != "RustDesk":
         raise ValueError("Rebuild Flutter with the RustDeskMCP bundle ID and executable")
     verify_binary(app / "Contents/MacOS/RustDesk")
+    signing_options = macos_signing_options()
     (app / "Contents/MacOS/RustDesk").rename(app / "Contents/MacOS" / APP_NAME)
     info["CFBundleExecutable"] = APP_NAME
     info["CFBundleName"] = APP_NAME
@@ -63,8 +77,9 @@ def package_macos(app):
     }]
     with info_path.open("wb") as stream:
         plistlib.dump(info, stream)
-    for target in (app / "Contents/MacOS/service", app):
-        subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(target)],
+    for target, identifier in ((app / "Contents/MacOS/service", BUNDLE_ID + ".service"),
+                               (app, BUNDLE_ID)):
+        subprocess.run(["codesign", *signing_options, "--identifier", identifier, str(target)],
                        check=True)
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
     app.rename(target_app)
