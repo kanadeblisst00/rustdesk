@@ -223,6 +223,8 @@ enum RenderType {
 pub struct FlutterHandler {
     // ui session id -> display handler data
     session_handlers: Arc<RwLock<HashMap<SessionID, SessionHandler>>>,
+    #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+    terminal_ui: Arc<crate::agent_mcp::terminal::initialization::State>,
     display_rgbas: Arc<RwLock<HashMap<usize, RgbaData>>>,
     peer_info: Arc<RwLock<PeerInfo>>,
     use_texture_render: Arc<AtomicBool>,
@@ -232,6 +234,8 @@ impl Default for FlutterHandler {
     fn default() -> Self {
         Self {
             session_handlers: Default::default(),
+            #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+            terminal_ui: Default::default(),
             display_rgbas: Default::default(),
             peer_info: Default::default(),
             use_texture_render: Arc::new(
@@ -576,7 +580,10 @@ impl FlutterHandler {
         debug_assert!(h.get("name").is_none());
         h.insert("name", json!(name));
         let out = serde_json::ser::to_string(&h).unwrap_or("".to_owned());
-        for (sid, session) in self.session_handlers.read().unwrap().iter() {
+        let handlers = self.session_handlers.read().unwrap();
+        #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+        self.terminal_ui.remember(name, &h, &out);
+        for (sid, session) in handlers.iter() {
             let mut push = false;
             if includes.is_empty() {
                 if !excludes.contains(&sid) {
@@ -1372,6 +1379,12 @@ pub fn session_start_(
             is_connected = h.event_stream.is_some();
             try_send_close_event(&h.event_stream);
             h.event_stream = Some(event_stream);
+            #[cfg(all(feature = "mcp", not(any(target_os = "android", target_os = "ios"))))]
+            crate::agent_mcp::terminal::initialize_ui(
+                &s,
+                &s.ui_handler.terminal_ui,
+                h.event_stream.as_ref(),
+            );
             is_found = true;
             break;
         }

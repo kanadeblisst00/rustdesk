@@ -119,9 +119,11 @@ class _TerminalPageState extends State<TerminalPage>
               TerminalConnectionManager.getTerminalCount(widget.id) > 1;
 
       if (!isExistingConnection) {
-        // First terminal - show loading dialog, wait for onReady
-        _ffi.dialogManager
-            .showLoading(translate('Connecting...'), onCancel: closeConnection);
+        // A reused MCP transport may initialize before this first frame.
+        if (_ffi.ffiModel.pi.version.isEmpty) {
+          _ffi.dialogManager
+              .showLoading(translate('Connecting...'), onCancel: closeConnection);
+        }
       } else {
         // Additional terminal - connection already established
         // Open the terminal directly
