@@ -1,5 +1,36 @@
 use super::*;
 
+pub(crate) mod initialization;
+
+pub(crate) fn initialize_ui(
+    session: &crate::flutter::FlutterSession,
+    state: &initialization::State,
+    stream: Option<&flutter_rust_bridge::StreamSink<crate::flutter_ffi::EventToUI>>,
+) {
+    let Some(stream) = stream else {
+        return;
+    };
+    if !session.is_terminal()
+        || !session
+            .connection_round_state
+            .lock()
+            .unwrap()
+            .is_connected()
+        || session.lc.read().unwrap().peer_info.is_none()
+        || !session
+            .sender
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|sender| !sender.is_closed())
+    {
+        return;
+    }
+    for event in state.events() {
+        stream.add(crate::flutter_ffi::EventToUI::Event(event));
+    }
+}
+
 pub(crate) fn mark_action(action: &mut hbb_common::message_proto::TerminalAction) {
     action
         .special_fields
