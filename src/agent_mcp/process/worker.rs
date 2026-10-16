@@ -83,6 +83,9 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
         .create_new(true)
         .open(dir.join("worker.lock"))
         .map_err(|e| format!("Worker already claimed or cannot start: {e}"))?;
+    // Unit tests call run in a shared process; only the dedicated worker installs a global hook.
+    #[cfg(not(test))]
+    super::worker_record::install_panic_hook(dir);
     let mut state = store::read_json(&dir.join("state.json"))?;
     if store::terminal(&state) {
         return Err("Job is already terminal".into());
@@ -102,6 +105,7 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
         Ok((_, identity)) => state["execution_identity"] = identity,
         Err(error) => state["identity_error"] = json!(error),
     }
+    super::worker_record::checkpoint(dir,&state,"prepare");
     let result = execute(dir, &mut state);
     if let Err(error) = result {
         state["state"] = json!("failed");
@@ -111,6 +115,7 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
     if state["state"] != "exited" {
         state["success"] = json!(false);
     }
+    super::worker_record::checkpoint(dir,&state,"workspace_verification");
     if let Err(e) = super::workspace::finish(dir, &mut state) {
         state["source_unchanged"] = serde_json::Value::Null;
         state["source_verification"] = json!({"state":"error","error":e});
@@ -118,6 +123,7 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
     }
     state["updated_at_ms"] = json!(store::now());
     state["finished_at_ms"] = json!(store::now());
+    super::worker_record::checkpoint(dir,&state,"final_result_write");
     if let Err(error) = store::write_json_detailed(&dir.join("state.json"), &state) {
         error.warn(&mut state, "completion_write");
         // A reader can deny replacement of state.json on Windows even after the command exits.
@@ -284,6 +290,7 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
                 state["state"] = json!("exited");
                 super::diagnostics::exit_status(state, status);
                 state["success"] = json!(status.success());
+                super::worker_record::checkpoint(dir,state,"command_exit_observed");
                 break;
             }
             let reason = if dir.join("cancel.json").exists() {
@@ -323,6 +330,7 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
         Err(error) => state["exit_status_error"] = json!(error.to_string()),
     }
     stop.store(true, Ordering::SeqCst);
+    super::worker_record::checkpoint(dir,state,"log_drain");
     let out_result = out.join().map_err(|_| "stdout collector panicked");
     let err_result = err.join().map_err(|_| "stderr collector panicked");
     state["logs_truncated"] = json!(exceeded.load(Ordering::SeqCst));

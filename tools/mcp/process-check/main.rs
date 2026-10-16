@@ -21,6 +21,8 @@ mod terminal_service {
 }
 #[path = "../../../src/agent_mcp/process/diagnostics.rs"]
 mod diagnostics;
+#[path = "../../../src/agent_mcp/process/worker_record.rs"]
+mod worker_record;
 #[path = "../../../src/agent_mcp/process/capabilities.rs"]
 mod capabilities;
 #[path = "../../../src/agent_mcp/process/reconcile.rs"]
