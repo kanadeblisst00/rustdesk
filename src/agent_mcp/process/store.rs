@@ -127,7 +127,21 @@ impl Store {
         {
             return Err("Invalid job_id".into());
         }
-        let path = self.root.join(id);
+        let mut path = self.root.join(id);
+        let missing = match fs::symlink_metadata(&path) {
+            Ok(_) => false,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(e) => return Err(e.to_string()),
+        };
+        if missing {
+            let archive = super::retention::archive_root(&self.root)?;
+            if archive.try_exists().map_err(|e|e.to_string())? {
+                private_dir(archive.parent().ok_or("Missing archive parent")?)?;
+                private_dir(&archive)?;
+                let candidate = archive.join(id);
+                if candidate.try_exists().map_err(|e|e.to_string())? { path = candidate; }
+            }
+        }
         if let Ok(meta) = fs::symlink_metadata(&path) {
             if !meta.is_dir() || meta.file_type().is_symlink() {
                 return Err("Invalid job directory".into());
@@ -138,6 +152,7 @@ impl Store {
 
     pub fn status(&self, id: &str) -> Result<Value, String> {
         let dir = self.directory(id)?;
+        let archived = dir.parent() != Some(self.root.as_path());
         let mut state = if dir.join("result.json").try_exists().map_err(|e| e.to_string())? {
             let result = read_json(&dir.join("result.json"))?;
             if !terminal(&result) || result["job_id"] != id {
@@ -148,6 +163,7 @@ impl Store {
             read_json(&dir.join("state.json"))?
         };
         state["last_known_state"] = state["state"].clone();
+        state["archived"] = json!(archived);
         state["observed_at_ms"] = json!(now());
         state["heartbeat_age_ms"] = json!(now().saturating_sub(state["updated_at_ms"].as_u64().unwrap_or(0)));
         if !terminal(&state)
@@ -207,7 +223,7 @@ impl Store {
             }
         }
         jobs.sort_by_key(|j| j["job_id"].as_str().unwrap_or("").to_owned());
-        Ok(json!({"jobs":jobs,"storage_path":self.root}))
+        Ok(json!({"capacity":super::retention::capacity(&jobs),"jobs":jobs,"storage_path":self.root}))
     }
 
     pub fn create(
@@ -230,9 +246,12 @@ impl Store {
             return self.status(id);
         }
         let existing = self.list()?;
+        let prior = existing["jobs"].as_array().ok_or("Invalid job store")?;
+        super::retention::reclaim(self, prior)?;
+        let existing = self.list()?;
         let jobs = existing["jobs"].as_array().ok_or("Invalid job store")?;
         if jobs.len() >= 256 || jobs.iter().filter(|j| !terminal(j)).count() >= 16 {
-            return Err("Job limit reached (16 active/unknown, 256 retained); cancel or remove completed jobs".into());
+            return Err(format!("Job limit reached: {}; archive confirmed completed jobs older than 24h; preserve unknown jobs and diagnostics. Archive directory: {}",super::retention::capacity(jobs),super::retention::archive_root(&self.root)?.display()));
         }
         // This is also the cross-connection idempotency claim. Never relaunch an existing directory.
         let mut builder = fs::DirBuilder::new();

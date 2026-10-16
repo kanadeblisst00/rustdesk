@@ -311,3 +311,15 @@ worker 位于被控端。Mac 控制 Windows 时，修复作业收尾需要更新
 - 完整 `cargo test --locked --features mcp --lib agent_mcp::` 因 GitHub 依赖拉取反复出现 `curl 18` / `early EOF` 未完成。浅拉取恢复一项依赖后，又持续等待 `wezterm`；已停止仅属于本次测试的构建进程并保留日志。仓库新增认证集成测试及 Windows 文件共享测试仍需在具备依赖的构建环境执行。
 
 原会话的 `0x80070005` 缺少具体 API、当时运行二进制版本及完整 worker 记录，不能断言就是此次复现的状态文件替换问题。已有心跳监控容错于 `fc3455e84` 引入；当前源码与部署版本需要分别核对。SDK 运行库配置、PowerShell 转发引用和台账审批问题不作为 RustDesk 缺陷处理。
+
+## 2026-10-16 容量与历史作业归档
+
+`list_processes.capacity` 分别返回 retained/completed/active/unknown、两类剩余槽位和 blocked_by。保留记录上限为 256，运行中与 unknown 合计上限为 16；两个限制独立计算，错误文本包含实际计数与阻塞类型。256 条记录中的 250 条已结束、6 条 unknown 表示历史记录满，此时运行中可以为零。
+
+接收新 job_id 前，保留记录达到 224 条时，将超过 24 小时并确认结束的记录按时间先后归档，目标降到 192 条。只有 exited/failed/cancelled/timed_out/log_limit 可以归档；unknown、活动、损坏和缺少可信结束时间的记录保留。归档位于 jobs 相邻的 `job-archives/retained/<job_id>`，保留原请求、状态、结果、日志及逐文件 SHA-256 清单。二次检查字节指纹和终态后采用同盘重命名，不重新执行命令、不根据 PID 终止进程、不删除归档数据。已有目标、收据、符号链接/reparse point、并发变化和遗留锁均停止归档并保留现场。
+
+归档作业不再计入在线记录限制；按原 ID 查询状态、读取日志和重复提交相同请求会读取归档，不再次启动命令。不同请求重用归档 ID 仍拒绝。显式 `remove_process` 保持删除已完成记录的原语义，也可删除调用方明确指定的归档；自动归档本身不执行删除。归档不自动过期，也不释放日志所占磁盘空间。
+
+原生策略属于被控端进程存储实现，更新控制端不会让旧 peer 获得这项能力。Cursor 桥接为旧 Windows peer 提供同保留期及水位的固定兼容归档执行器，提前预留空槽；原生与兼容执行器使用同一归档目录和 `retention.lock`。旧 peer 已完全占满时需先由 Codex 审核归档历史终态，不能删除 unknown 腾槽。
+
+回归面限定于 MCP：`process/mod.rs` 注册专用 retention 模块；`process/store.rs` 在新作业准入前归档、增加容量信息，并允许原有查询/幂等路径读取归档。普通远控、GUI、认证、工作区源码同步、worker 执行与取消路径不变，非 MCP 构建不包含新模块。

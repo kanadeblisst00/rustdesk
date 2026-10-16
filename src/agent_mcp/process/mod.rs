@@ -6,6 +6,7 @@ mod read_file;
 mod presentation;
 mod platform;
 mod store;
+mod retention;
 #[cfg(test)]
 mod tests;
 mod worker;
