@@ -673,7 +673,8 @@ jobs:
           gh release create "$tag" release/* --draft --target "$GITHUB_SHA" \
             --title "RustDesk MCP $(TZ=Asia/Shanghai date +%Y-%m-%d) #${GITHUB_RUN_NUMBER}" \
             --notes-file release-notes.md
-          gh api "repos/$GH_REPO/releases/tags/$tag" > uploaded-assets.json
+          release_id="$(gh release view "$tag" --json databaseId --jq .databaseId)"
+          gh api "repos/$GH_REPO/releases/$release_id" > uploaded-assets.json
           python3 - <<'PY'
           import hashlib, json, pathlib
           expected = {p.name: p for p in pathlib.Path('release').iterdir()}
