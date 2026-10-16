@@ -173,7 +173,7 @@ class ProcessWorkerTest(unittest.TestCase):
 
     def test_head_tail_keeps_the_last_compiler_error_after_the_limit(self):
         import hashlib
-        result = self.run_worker("import sys; sys.stdout.write('begin\\n' + 'x'*8192 + '\\nfinal-error\\n'); sys.exit(7)",
+        result = self.run_worker("import sys; sys.stdout.buffer.write(b'begin\\n' + b'x'*8192 + b'\\nfinal-error\\n'); sys.exit(7)",
                                  request_overrides={'max_log_bytes':1024,'log_limit_policy':'head_tail'})
         self.assertEqual(result['state']['exit_code'],7)
         self.assertTrue(result['stdout'].startswith(b'begin\n'))
