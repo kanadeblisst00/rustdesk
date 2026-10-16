@@ -14,6 +14,58 @@ EXECUTABLE = os.environ.get("RUSTDESK_MCP_TEST_EXECUTABLE")
 
 @unittest.skipUnless(EXECUTABLE, "set RUSTDESK_MCP_TEST_EXECUTABLE to a built MCP executable")
 class ProcessWorkerTest(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32" and os.environ.get('RUSTDESK_MCP_TEST_RECONCILE_CLI') == '1', "Windows process-check recovery CLI")
+    def test_windows_reconcile_worker_crash_checks_real_process_tree(self):
+        with tempfile.TemporaryDirectory(prefix="mcp-reconcile-") as directory:
+            root = Path(directory)
+            job = root / "crashed"
+            job.mkdir(mode=0o700)
+            script = "import pathlib,time; pathlib.Path('started').write_text('ready'); time.sleep(60); pathlib.Path('leaked').write_text('bad')"
+            request = {"job_id": "crashed", "executable": sys.executable,
+                       "args": ["-c", script], "cwd": str(root), "timeout_ms": 90000}
+            (job / 'request.json').write_text(json.dumps(request), encoding='utf-8')
+            (job / 'state.json').write_text(json.dumps({"job_id":"crashed", "state":"starting", "updated_at_ms":int(time.time()*1000), "exit_code":None}), encoding='utf-8')
+            worker = subprocess.Popen([EXECUTABLE, '--mcp-process-worker', str(job)])
+            try:
+                deadline = time.monotonic() + 15
+                state = None
+                while time.monotonic() < deadline:
+                    try:
+                        state = json.loads((job / 'state.json').read_text(encoding='utf-8'))
+                    except (PermissionError, json.JSONDecodeError):
+                        pass
+                    if state and state.get('state') == 'running' and (root / 'started').exists():
+                        break
+                    time.sleep(.05)
+                else:
+                    self.fail('Worker did not persist running identity/containment evidence')
+                live = subprocess.run([EXECUTABLE, '--mcp-reconcile-job', str(job)], capture_output=True, text=True, check=True)
+                self.assertFalse(json.loads(live.stdout)['reconciled'])
+                worker.kill()
+                worker.wait(timeout=5)
+                state['updated_at_ms'] = 1
+                (job / 'state.json').write_text(json.dumps(state), encoding='utf-8')
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    probe = subprocess.run([EXECUTABLE, '--mcp-reconcile-job', str(job)], capture_output=True, text=True, check=True)
+                    recovered = json.loads(probe.stdout)
+                    if recovered['reconciled']:
+                        break
+                    time.sleep(.1)
+                else:
+                    self.fail('Killed worker/process tree was not reconciled: ' + probe.stdout)
+                self.assertEqual(recovered['job']['state'], 'failed')
+                self.assertEqual(recovered['job']['execution_outcome'], 'unknown')
+                self.assertIsNone(recovered['job']['exit_code'])
+                self.assertIsNone(recovered['job']['success'])
+                self.assertTrue(recovered['active_slot_released'])
+                self.assertEqual(json.loads((job / 'state.json').read_text())['updated_at_ms'], 1)
+                self.assertFalse((root / 'leaked').exists())
+            finally:
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.wait(timeout=5)
+
     def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False, descendant=False, request_overrides=None, close_transport=False, block_state=False):
         with tempfile.TemporaryDirectory(prefix="mcp-worker-") as directory:
             root = Path(directory)
@@ -65,6 +117,8 @@ class ProcessWorkerTest(unittest.TestCase):
                 state = json.loads((final_path if final_path.exists() else job / "state.json").read_text(encoding="utf-8"))
                 result = {"state": state, "stdout": (job / "stdout.log").read_bytes(),
                           "stderr": (job / "stderr.log").read_bytes()}
+                result['tail_snapshots'] = {stream:(job / (stream + '.tail')).read_bytes()
+                                            for stream in ('stdout','stderr') if (job / (stream + '.tail')).exists()}
                 if descendant:
                     self.assertTrue((root / "started").exists(), "Grandchild did not start; cleanup was not exercised")
                     time.sleep(2)
@@ -116,6 +170,19 @@ class ProcessWorkerTest(unittest.TestCase):
         self.assertFalse(result["state"]["logs_retained"])
         self.assertEqual(result["stdout"], b"")
         self.assertEqual(result["stderr"], b"")
+
+    def test_head_tail_keeps_the_last_compiler_error_after_the_limit(self):
+        import hashlib
+        result = self.run_worker("import sys; sys.stdout.write('begin\\n' + 'x'*8192 + '\\nfinal-error\\n'); sys.exit(7)",
+                                 request_overrides={'max_log_bytes':1024,'log_limit_policy':'head_tail'})
+        self.assertEqual(result['state']['exit_code'],7)
+        self.assertTrue(result['stdout'].startswith(b'begin\n'))
+        header,tail = result['tail_snapshots']['stdout'].split(b'\n',1)
+        metadata = json.loads(header)
+        self.assertTrue(tail.endswith(b'final-error\n'))
+        self.assertEqual(metadata['sha256'],hashlib.sha256(tail).hexdigest())
+        self.assertGreater(metadata['tail_offset'],metadata['prefix_bytes'])
+        self.assertLessEqual(len(result['stdout'])+len(tail),1024)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows file sharing")
     def test_heartbeat_sharing_failure_does_not_kill_the_command(self):

@@ -134,6 +134,30 @@ fn disconnected_transport_is_not_authentication_and_wait_expiry_is_explicit() {
 }
 
 #[test]
+fn readiness_waits_for_delayed_authentication_on_the_original_uuid() {
+    if !isolated("readiness_waits_for_delayed_authentication_on_the_original_uuid") { return; }
+    let (id,s,_rx) = terminal();
+    let state = track(id,false).unwrap();
+    begin(&s.lc);
+    let remote = s.clone();
+    let authentication = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        remote.lc.write().unwrap().peer_info = Some(PeerInfo::default());
+    });
+    let args = json!({"channel":"authentication","timeout_ms":2000});
+    let result = crate::agent_mcp::readiness::wait(id,&s,&state,args.as_object().unwrap()).unwrap();
+    authentication.join().unwrap();
+    assert_eq!(result["structuredContent"]["ready"],true);
+    assert_eq!(result["structuredContent"]["session"],id.to_string());
+    assert_eq!(session::list().len(),1);
+    assert_eq!(result["structuredContent"]["readiness"]["command_channel"],"unverified");
+    s.connection_round_state.lock().unwrap().set_disconnected(0);
+    let disconnected = crate::agent_mcp::readiness::wait(id,&s,&state,args.as_object().unwrap()).unwrap();
+    assert_eq!(disconnected["structuredContent"]["ready"],false);
+    assert_eq!(disconnected["structuredContent"]["authentication"],"disconnected");
+}
+
+#[test]
 fn connect_restarts_a_disconnected_round_and_preserves_the_session() {
     if !isolated("connect_restarts_a_disconnected_round_and_preserves_the_session") {
         return;

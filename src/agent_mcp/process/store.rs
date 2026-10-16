@@ -179,6 +179,13 @@ impl Store {
                 Err(e) => return Err(e.to_string()),
             };
             state[format!("{stream}_bytes")] = json!(size);
+            let tail = dir.join(format!("{stream}.tail"));
+            if state["log_limit_policy"] == "head_tail" && tail.try_exists().map_err(|e| e.to_string())? {
+                let bounds = super::head_tail::bounds(&tail)?;
+                state[format!("{stream}_bytes")] = bounds["total_bytes"].clone();
+                state[format!("{stream}_retained_ranges")] = json!([[0,bounds["prefix_bytes"]],
+                    [bounds["tail_offset"],bounds["total_bytes"]]]);
+            }
         }
         state["log_paths"] =
             json!({"stdout":dir.join("stdout.log"),"stderr":dir.join("stderr.log")});
@@ -270,6 +277,7 @@ impl Store {
         state["log_limit_policy"] = json!(arguments["log_limit_policy"].as_str().unwrap_or("truncate"));
         state["logs_truncated"] = json!(false);
         state["logs_retained"] = json!(arguments["retain_logs"].as_bool().unwrap_or(true));
+        state["producer_encoding_hint"] = json!(arguments["producer_encoding_hint"].as_str().unwrap_or("unknown"));
         write_json(&dir.join("state.json"), &state)?;
         if let Err(error) = launch(&dir) {
             let error = error.record(&mut state);
@@ -288,6 +296,9 @@ impl Store {
     pub fn call(&self, operation: &str, args: &Value) -> Result<Value, String> {
         if operation == "list_processes" {
             return self.list();
+        }
+        if operation == "reconcile_process" {
+            return super::reconcile::call(self, args);
         }
         if operation == "wait_for_process" {
             return super::wait::call(self, args);
@@ -354,6 +365,10 @@ impl Store {
                 if !matches!(stream, "stdout" | "stderr" | "setup") {
                     return Err("Invalid stream".into());
                 }
+                if state["log_limit_policy"] == "head_tail"
+                    && dir.join(format!("{stream}.tail")).try_exists().map_err(|e| e.to_string())? {
+                    return super::head_tail::read(&dir, &state, args);
+                }
                 let mut offset = args["offset"].as_u64().unwrap_or(0);
                 let size = args["max_bytes"].as_u64().unwrap_or(65536).clamp(1, 65536);
                 let mut file = match File::open(dir.join(format!("{stream}.log"))) {
@@ -406,8 +421,13 @@ impl Store {
                 let next = offset + data.len() as u64;
                 let mut result =
                     super::output::decode(&data, args["encoding"].as_str().unwrap_or("auto"));
+                super::output::provenance(&mut result,args,&state["producer_encoding_hint"]);
                 super::presentation::annotate(&mut result);
                 result["truncated_start"] = json!(truncated_start);
+                result["logs_truncated"] = state["logs_truncated"].clone();
+                result["retained_ranges"] = json!([[0,state[format!("{stream}_bytes")]]]);
+                result["total_bytes"] = state[format!("{stream}_bytes")].clone();
+                result["total_bytes_scope"] = json!("retained_log_file; bytes discarded by truncate or retain_logs:false are not counted");
                 let fields = result.as_object_mut().ok_or("Invalid output metadata")?;
                 fields.extend(json!({"job_id":id,"stream":stream,"offset":offset,"next_offset":next,"data_base64":STANDARD.encode(&data),"complete":terminal(&state),"eof":terminal(&state) && next >= state[format!("{stream}_bytes")].as_u64().unwrap_or(0)}).as_object().ok_or("Invalid log metadata")?.clone());
                 if args["include_base64"] == false && fields.get("text").is_some_and(Value::is_string) {

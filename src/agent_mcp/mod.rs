@@ -2,6 +2,7 @@ mod actions;
 mod files;
 pub(crate) mod auth;
 mod connection_queue;
+mod readiness;
 mod lifecycle;
 pub(crate) mod daemon;
 mod desktop;
@@ -20,6 +21,7 @@ pub(crate) mod process;
 #[cfg(test)]
 mod network_tests;
 pub(crate) use automation::response as automation_response;
+pub(crate) use readiness::response as readiness_response;
 
 use crate::flutter_ffi::SessionID;
 use hbb_common::{config::LocalConfig, log, tokio};
@@ -47,6 +49,7 @@ static STATUS: Mutex<String> = Mutex::new(String::new());
 
 #[derive(Default)]
 pub(super) struct SessionState {
+    readiness: readiness::State,
     events: Events,
     operation: Mutex<()>,
     desktop_operation: rustdesk_agent_mcp::queue::OperationQueue,
@@ -237,9 +240,6 @@ impl Backend for DesktopBackend {
         {
             return Err("Local control requires a separate local credential".into());
         }
-        if name == "get_capabilities" && args.contains_key("session") {
-            return Err("Session capability queries currently require a local session; omit session for remote capabilities".into());
-        }
         self.call(if name == "disconnect_session" { "disconnect_device" } else { name }, args)
     }
 
@@ -252,11 +252,19 @@ impl Backend for DesktopBackend {
     fn call(&self, name: &str, args: &Map<String, Value>) -> ToolResult {
         ensure_enabled()?;
         if name == "get_capabilities" {
+            if let Some(id) = args.get("session").and_then(Value::as_str) {
+                let id = SessionID::parse_str(id).map_err(|_| "Invalid session UUID")?;
+                let s = session::get(id)?;
+                let state = track(id, false)?;
+                return process::negotiate(id, &s, &state, args);
+            }
             return Ok(success(
                 json!({"transport":["streamable-http","stdio-proxy"],
                 "desktop":true,"terminal":true,"files":true,"headless":true,
+                "capability_scope":"controller; remote support must be queried with get_capabilities(session)",
+                "session_capability_negotiation":true,
                 "background_controller":daemon::active(),"headless_required":daemon::active(),
-                "processes":{"supported":true,"requires_upgraded_peer":true,"session_kind":"terminal","durable_logs":true,"structured_failure":true,"survives_disconnect":true,"max_active":16,"max_retained":256,"default_timeout_ms":3600000,"max_timeout_ms":86400000,"extend_timeout":true,"timeout_policy":"terminate_process_tree","environment_script":true,"wait_for_process":true,"max_wait_ms":60000,"batch_remove":true,"optional_log_retention":true,"read_remote_file":true,"recover_processes_by_device":true,"windows_shells":["none","cmd","powershell"],"output_encodings":["auto","utf-8","oem","cp936","base64"],"structured_log_presentation":true,"default_log_limit_policy":"truncate","log_limit_policies":["truncate","terminate"],"default_log_bytes_per_stream":16777216,"max_log_bytes_per_stream":268435456,"recovery":"query_same_job_id; stale worker is unknown, never automatically restarted"},
+                "processes":{"supported":true,"requires_upgraded_peer":true,"session_kind":"terminal","durable_logs":true,"structured_failure":true,"survives_disconnect":true,"max_active":16,"max_retained":256,"default_timeout_ms":3600000,"max_timeout_ms":86400000,"extend_timeout":true,"timeout_policy":"terminate_process_tree","environment_script":true,"wait_for_process":true,"max_wait_ms":60000,"batch_remove":true,"optional_log_retention":true,"read_remote_file":true,"recover_processes_by_device":true,"windows_shells":["none","cmd","powershell"],"output_encodings":["auto","utf-8","oem","cp936","base64"],"structured_log_presentation":true,"default_log_limit_policy":"truncate","log_limit_policies":["truncate","terminate","head_tail"],"default_log_bytes_per_stream":16777216,"max_log_bytes_per_stream":268435456,"recovery":"query_same_job_id; stale worker is unknown, never automatically restarted"},
                 "workspaces":{"supported":true,"requires_upgraded_peer":true,"max_workspaces":64,"exclusive_commands":true,"custom_root":true,"publish_artifact":true,"max_publish_bytes":536870912,"verified_file_replacement":true,"file_chunk_bytes":16384,"file_transfer_session_required":false,"source_fingerprint":"sha256","source_excludes":true,"separate_source_verification":true,"artifact_checksums":"sha256","source_revision":"caller-declared; not Git verified"},
                 "concurrency":{"http_control_slots":8,"http_event_wait_slots":4,"connection_queue":"per device and kind","connection_queue_timeout_ms":30000,"stdio_default_parallel":8},
                 "environment":{"inspection":true,"requires_upgraded_peer":true,"versions_and_packages":"explicit command probes","automatic_installation":false,"dependency_policy":rustdesk_agent_mcp::process::dependency_policy()},
@@ -314,6 +322,9 @@ impl Backend for DesktopBackend {
         }
         if name == "screenshot" {
             return desktop::screenshot(id, &s, &state, args);
+        }
+        if name == "wait_for_session_ready" {
+            return readiness::wait(id, &s, &state, args);
         }
         if name == "terminal_output" {
             if session::ready(&s).is_err() { terminal::reconnected(&state); }
@@ -438,6 +449,7 @@ pub fn event(id: SessionID, name: &str, data: &impl serde::Serialize) {
         state.jobs.lock().unwrap().clear();
         state.overwrites.lock().unwrap().clear();
         state.automation.reset();
+        state.readiness.reset();
     }
     let data = match serde_json::to_value(data) {
         Ok(data) => data,

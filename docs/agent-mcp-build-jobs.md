@@ -323,3 +323,137 @@ worker 位于被控端。Mac 控制 Windows 时，修复作业收尾需要更新
 原生策略属于被控端进程存储实现，更新控制端不会让旧 peer 获得这项能力。Cursor 桥接为旧 Windows peer 提供同保留期及水位的固定兼容归档执行器，提前预留空槽；原生与兼容执行器使用同一归档目录和 `retention.lock`。旧 peer 已完全占满时需先由 Codex 审核归档历史终态，不能删除 unknown 腾槽。
 
 回归面限定于 MCP：`process/mod.rs` 注册专用 retention 模块；`process/store.rs` 在新作业准入前归档、增加容量信息，并允许原有查询/幂等路径读取归档。普通远控、GUI、认证、工作区源码同步、worker 执行与取消路径不变，非 MCP 构建不包含新模块。
+
+
+## 2026-10-16 六项目反馈：P0 源码草案（未验收）
+
+本轮从 `master`、`8dd25ef62` 和干净工作区开始。用户在构建通道受阻后明确选择“暂不改桥接，先完成源码审查并保留未验证改动”。本节保留第一轮草案及当时的评估；P1/P2 续作和源码提交范围见下一节。未编译、未运行测试、未部署，不能据此声称主备机已生效。
+
+### 反馈核对
+
+| 项目 | 当前证据与判断 |
+| --- | --- |
+| 16/256 固定额度与实际数量混淆 | 属实；但此前提交 `8dd25ef62` 已增加实际 active/unknown/completed/retained、blocked_by 与历史终态归档。本轮不重复实现。六项目“12 个任务”的统计未经本轮重查，不能据此推算运行数量。 |
+| unknown 持续占活动额度 | 属实。既有状态查询只在心跳超过 30 秒后标为 unknown，并拒绝删除；不能证明进程已结束。新草案增加显式、安全核对入口。旧记录缺乏身份/包含关系证据时仍需人工审核。 |
+| 控制端声明代替远端能力 | 属实。此前全局能力静态声明 read_remote_file 等接口，且远端会话查询被拒绝。新增会话协商；未协商的旧调用保留兼容路径，不自动声称旧 peer 支持新接口。 |
+| RPC 超时缺少结果确认信息 | 属实。原先多数操作 15 秒、固定错误文本。草案增加可选接收回执、请求/作业标识、派发阶段及按操作区分的等待预算。回执不等于执行完成。 |
+| 认证和通道就绪 | 部分已有：原 UUID 重连、认证等待和挑战状态已有实现。统一的命令/文件通道就绪等待仍待补齐；本轮没有改认证流程。 |
+| 文件传输恢复 | 工作区原有分块、重试比对、持久暂存及 SHA-256；本轮补充独立上传状态查询。普通 files 会话的完整持久传输日志/断点续传仍待完善，不能用工作区接口代替全部文件传输能力。 |
+| Windows 错误诊断 | Failure/monitor_warning 已包含 API、阶段、OS/HRESULT、执行身份与清理信息。单个 0x80070005 无法确定原事故阶段；主备机部署版本及真实错误链未核验。 |
+| 环境预检 | 确认缺少分层 CODEX_BUILD_ROOT 核验和完整工具链可用性证明。现有版本检查明确为 false；PATH 发现只能说明找到文件。本轮未新增执行版本检查、目录写入探测或读取秘密配置。 |
+| 日志首尾保留 | 属实。worker capture 达到限制后保留前缀并丢弃后续内容；tail_lines 只能读取已保留字节。轮转/保留尾部尚未实现。 |
+| 参数及编码 | schema 与部署版本不一致会导致参数被拒绝；新增会话 schema 核对可在发送前拒绝不支持参数。乱码仍需按实际生产者、encoding 和原始字节判断，不能全部归为传输故障。 |
+| 真实 Windows 回归及主备一致性 | 已增加崩溃恢复用例源码，但尚未运行。认证延迟、断线、容量压力、多客户端及大产物恢复的完整矩阵仍待执行。未新建 Windows 连接、未更新两机程序。 |
+
+wxrobot、wxrobot_api、wxcode 的部署输入问题，we-rss-client 的随机端口规则冲突，feed-downloader 的 rustc/MSVC 异常和 biz_download 的通过记录均按用户提供的线索单列；本轮没有修改这些项目，也没有将其归因为 RustDesk 缺陷。
+
+### 新接口与安全边界
+
+`get_capabilities(session:<terminal UUID>)` 返回 controller/peer 两端的协议、平台、包版本、操作和完整参数 schema；远端必须实际回复才能 negotiated:true。旧 peer 返回 Unknown process operation 时报告 negotiated:false、operations:[]。已协商的能力按连接轮次保存；重连后旧缓存阻止发送并要求重新协商。没有协商过的旧调用继续原兼容路径。
+
+build_commit 来自可选编译变量 RUSTDESK_MCP_BUILD_COMMIT，未提供时为 null。executable_sha256 是每次观察时磁盘 current_exe 文件的哈希，**不是内存中已加载映像的证明**；字段中明确标注范围。发布验收仍应结合构建输入指纹和部署文件校验，不能只看版本字符串。
+
+新控制端在进程 RPC 上请求 receipts:true。新 peer 通过认证、schema 校验和服务请求并发配额后发送 received:true，再异步执行；回执不保证取得作业容量或已经创建作业。旧控制端没有请求回执时仍只收到原最终响应，避免把回执误认为缺少结果。新错误结构区分 not_sent、queued、remote_received；queued 仅证明进入本机 RustDesk 发送队列。远端无回执时不把未知接收状态写成 false。错误不复制 env、命令参数或配置值，不自动重放。提交超时后查询同一 job_id；文件写入超时后查询同一上传。
+
+`reconcile_process(session,job_id)` 只处理心跳过期的作业。新 Windows worker 记录 worker/command/setup 的 PID 与进程创建 FILETIME，以及随机命名、kill-on-close 的 Job Object。开始创建子进程之前先持久写入 launch_pending；如果启动在关键窗口中断，保留 unknown。命令启动后身份或恢复记录写入失败只记录监控警告，不因此终止命令。核对使用只读进程句柄及 Job Object 活动进程数；拒绝访问、证据缺失、worker 仍在、进程树仍在或记录并发变化时不释放额度。PID 不同创建时间视为复用，不会按该 PID 发终止请求。
+
+只有证明 worker 和所有已记录受控进程树结束后，才保留原 state.json/日志，并写 result.json：state:failed、failure_stage:worker_lost、execution_outcome:unknown、success:null，缺失的退出码保持缺失。使用现有 failed 终态兼容已有客户端。新结果释放活动额度，原 job_id 重复提交仍只返回原记录。工作区租约释放失败单列 workspace_release_error，保留现场。此机制不根据时间删除任务，不恢复旧 worker 已丢失的真实退出码，不适用于缺乏证据的历史记录；非 Windows 平台暂不自动核对进程树。
+
+使用 Global 命名空间是为了避免服务与登录用户会话处于不同命名空间时将“查不到对象”误当成进程树结束；访问控制仍由授权 OS 身份决定。参见微软 [Kernel object namespaces](https://learn.microsoft.com/en-us/windows/win32/termserv/kernel-object-namespaces) 和 [OpenJobObjectW](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-openjobobjectw)。
+
+`get_workspace_upload(session,workspace_id,path,total_bytes,sha256)` 只读查询同一持久暂存：返回 next_offset、已暂存前缀 SHA-256；目标已发布且全文件大小/哈希匹配时返回 complete:true、verified:true。身份冲突保留现场，不写入或覆盖目标。调用方必须核对前缀后续传，最终仍核对整文件哈希。接口不返回文件内容或配置值。
+
+### 回归面与最小化检查
+
+| 已有文件 | 必需的既有路径变化 |
+| --- | --- |
+| libs/agent_mcp/src/catalog.rs | 基础 get_capabilities 工具允许可选 session；让未启用 local 功能的构建也能协商远端能力。 |
+| libs/agent_mcp/src/lib.rs、errors.rs | 注册独立 RPC 模块并解包本地生成的结构化错误；原非 RPC 字符串错误保持原路径。 |
+| libs/agent_mcp/src/process.rs、workspace.rs | 注册 reconcile_process、get_workspace_upload 和内部协商参数校验；原 run_process 参数和默认策略保留。 |
+| src/agent_mcp/mod.rs | 全局能力标注控制端范围；带 session 时增加薄协商入口，不改变普通桌面路由。 |
+| src/agent_mcp/process/mod.rs | 进程 RPC 的待处理回执、协商缓存、发送前校验、超时错误与 opt-in 接收回执；这些是定位和恢复不确定 RPC 的必要协议改动。 |
+| src/agent_mcp/process/windows.rs | MCP 子进程的原 Job Object 改为随机命名，保留原挂载、恢复线程和清理主体，以供重连后只读核对。 |
+| src/agent_mcp/process/worker.rs、setup.rs | 新身份记录与 Windows 启动包含关系的薄钩子；Unix 继续使用原 Child::spawn，原取消、超时和日志策略不变。 |
+| src/agent_mcp/process/store.rs | 增加显式 reconcile 分支；状态查询不自行改写或删除 unknown，原容量/归档策略保持。 |
+| src/agent_mcp/process/workspace.rs、workspace_files.rs | 增加上传状态查询分支；既有分块写入、哈希验证与替换路径没有改写。 |
+| tools/mcp/process-check/main.rs | 包含生产新模块和此前 retention 模块，提供仅测试夹具使用的恢复 CLI；不是桌面应用发布入口。 |
+| src/agent_mcp/process/tests.rs、libs/agent_mcp/tests/protocol.rs、tools/mcp/test_process_worker.py | 增加回执/默认 feature schema、上传回执丢失、真实 Windows worker 崩溃恢复的回归用例；Windows 恢复 CLI 用例只在专用夹具中启用。 |
+
+新增实现集中于 process/capabilities.rs、process/reconcile.rs、process/reconcile_windows.rs 和 libs/agent_mcp/src/process_rpc.rs；测试入口为 tools/mcp/run_reliability_checks.py。没有修改普通远控、Flutter UI、共享 trait/struct、Git 分支、子模块引用或其他项目源码；非 MCP 构建不进入新运行路径。新增运行逻辑没有加入 unwrap/expect 或新依赖。
+
+### 本轮验证状态
+
+- Rustfmt 仅用于语法解析（emit stdout、skip_children），未对已有文件进行格式化重写；Python 使用 ast.parse。另检查 git diff --check。它们不是类型检查或运行测试。
+- 检查了 Cargo.lock 锁定 windows 0.61.3 的 API 源码，下载内容经锁文件 SHA-256 校验；未编译或安装工具链。
+- 已保存两个尚未预检的 Cursor 专用预设草案：rustdesk-mcp-reliability-macos / rustdesk-mcp-reliability-windows。恢复验收时仍须核对既有 Cargo/Rustup 路径和工具链选择，不允许自动下载软件。它们计划构建直接包含生产进程模块的 process-check 夹具，运行协议/worker 测试并保留真实 JSON 报告、日志和夹具哈希；不是完整桌面应用构建。
+- cursor_build_test 拒绝派发：“桥接运行版本落后于磁盘源码或执行器；请重新编译并重连 MCP 后派发，未启动推理”。没有 task_id、进程或退出码可恢复；没有将其写成测试通过。没有绕过委派直接运行 Cargo。
+- 静态检查桥接 sourceManifest 还发现：本仓库包含 Git 子模块目录，而当前清单实现会拒绝该目录。这是尚待实际派发核实的后续阻塞，不修改桥接规避它。
+- 第一轮结束时按用户要求保留未验证源码，未提交、未 push、未部署。随后用户明确要求继续 P1/P2、完成源码审查后提交，仍不修改桥接、不编译；续作如下。
+
+## 2026-10-16 P1/P2 续作：源码完成，待运行验收
+
+本次提交同时包含上一节保留的 P0 草案和本节 P1/P2。用户明确授权在不编译的条件下提交源码。以下“覆盖”均指实现和回归用例源码，不能视为 Windows 运行结果。
+
+### 实现及边界
+
+| 反馈 | 本次处理 |
+| --- | --- |
+| 认证、命令和文件通道就绪不清楚 | get_connection_info 增加 readiness；wait_for_session_ready 在同一 UUID 等待认证、processes 协商或 files 的随机 keepalive 回包。返回挑战、权限不足、通道错误和等待到期；不重连、不换机。文件就绪仅证明认证/权限和传输往返，目录权限仍单独检查。 |
+| 传输和产物回收的完成证据不足 | 复用工作区分块与全文件 SHA-256。上传可选 chunk_sha256，在写入前核对；get_workspace_upload 查询暂存进度、前缀哈希或已发布文件。新下载持久记录支持重连查询、重复块读取、前缀核对和最终收件确认。 |
+| Windows 诊断贯通 | Failure、monitor_warning 增加阶段、时间、job_id、worker PID、执行身份和 worker 版本/磁盘哈希；Win32/HRESULT 同时保留。启动失败的主进程清理与 Job Object 进程树清理分开描述；setup PID/退出码不冒充主命令结果。原事故的具体根因和远端部署仍未核实。 |
+| 环境预检不完整 | get_environment.preflight 报告 Windows machine/user/process/authorized_environment 两个根变量及选择来源；显式无效或不可观察时要求审核，不静默回退。目录使用授权身份的只读访问检查；缺少默认目录时报告 needs_creation，不创建目录。required_paths 只返回调用方 id、存在性/类型及有限 OS 错误，不读取配置内容。 |
+| 找到路径不等于版本可用 | 新增显式 probe_environment，每次至多四项固定版本参数，使用授权用户启动的持久 worker、稳定 job_id、5 秒超时及有界日志。不能在 get_environment 中暗中启动程序。调用方仍须读取各作业的退出码和版本输出；未通过的路径发现不报告 toolchain_usable:true。 |
+| 超限日志丢失最终错误 | 可选 log_limit_policy:head_tail，保留前缀和最多 1 MiB 环形尾部；默认 truncate、terminate 和 retain_logs:false 保留原执行路径。输出报告原始字节游标、缺口、保留范围、截断和 eof。 |
+| 参数与编码不适配 | 会话协商包含准确 schema；非 Windows 不声明 Windows setup/shell、OEM/CP936 解码或进程树核对。producer_encoding_hint 仅为调用方声明，和 requested_encoding、decoding_encoding 分开报告，不改写原始字节或强制解码。 |
+| Windows 回归和主备版本验收不足 | 增加实际 worker 故障用例源码、跨客户端幂等/丢失回执/大文件恢复等用例，以及独立主备快照核对脚本。未运行这些用例，未读取两台设备当前程序或更新部署。 |
+
+Windows 环境读取只查询指定的两个变量；用户级注册表通过 RegOpenCurrentUser 在授权身份下打开。CODEX_BUILD_ROOT / CODEX_DEPLOYMENT_ROOT 依次检查 machine、user、authorized_environment、process，所有观察值均保留以供核对。未配置时，构建根使用 D:/Temp（D 不存在或确认不可写才选 C:/Temp）或用户主目录下 codex-builds；部署根使用实际授权用户主目录下 CodexDeployments。不可观察的权限返回未知；访问检查不保证后续实际写入成功。预检不会安装软件、改变环境变量或读取秘密值。
+
+probe_environment 的 probe_id 和可执行文件顺序属于幂等身份；例如 versions-version-0。当前固定参数覆盖 git、python/python3、rustc/cargo、cmake/ninja、node、dotnet、clang/gcc、go、java；WindowsApps 别名及未列入的包装器不自动执行，需项目专用探针。版本进程通过既有 authorized identity.launch 启动，不能在服务线程中直接 Command::spawn 冒用 SYSTEM。部分探针提交后失去响应时，先查询相同 ID，不生成另一组 ID。
+
+### 持久传输用法
+
+上传沿用 write_workspace_file：每块最多 16 KiB，增加可选 chunk_sha256。未知响应后使用原 path/total_bytes/sha256 查询 get_workspace_upload，再核对本地前缀哈希并续传；相同块可重复提交，冲突保留现场。状态查询不会创建缺少的目标父目录，不跟随符号链接或 Windows reparse point。
+
+下载通过同一终端会话，无需共享控制端文件系统：
+
+1. begin_workspace_download(workspace_id, transfer_id, job_id, path) 绑定最新已结束作业的 build/artifacts/reports 文件，保留大小和全文件 SHA-256。
+2. read_workspace_download 使用原 transfer_id/offset 获取默认 16 KiB、最多 256 KiB 的块与 chunk_sha256。重连时可提供本地 [0,offset) 的 prefix_sha256；未通过时不返回后续块。get_workspace_download 查询保留记录。
+3. 本地拼接后自行计算完整大小/哈希，再调用 finish_workspace_download(received_bytes,received_sha256)。服务端复核当前源文件，并持久保存调用方确认；最后一块 eof:true 只表示块范围到达文件末尾。
+4. 核验收件后可显式 remove_workspace_download 删除指定已完成回执以释放记录容量。未完成记录保留；不删除产物、本地文件或源码。删除回执后不能再依赖该 ID 的历史收件证明。
+
+下载每文件上限 2 GiB、每工作区最多保留 64 条记录，哈希和前缀核验各有 10 秒预算，慢盘可能需拆分产物。last_read 表示服务端已读取范围，不能证明调用方收到；completed 表示调用方提交的大小/哈希与当时源文件一致，不能远程证明调用方实际磁盘写入。get 查询的是历史记录，不重新证明源文件仍未变化。文件外部写入者未被锁住，调用方须检查最终全文件哈希；源大小/时间、工作区最新任务或身份变化时拒绝继续。普通 file_transfer 的生命周期没有重写；此持久恢复能力限定于新工作区接口，旧文件通道的独立持久账本仍未实现。
+
+### 日志与发布验收
+
+head_tail 的总保留内容受 max_log_bytes 限制；每流前缀占剩余预算，尾部最多占一半且不超过 1 MiB。尾部带范围/哈希的单文件快照通过原子替换保存，运行中约每秒更新，收尾刷新。read_process_output 不把缺失的中段拼成连续字节；gap 明示跳过的原始范围。tail_lines 在尚未截断时读取仍连续保留的完整窗口。total_bytes_scope:original_stream 表示已观察的原始流字节；旧 truncate 路径的同名计数只代表保留文件，超限丢弃的字节没有被计数。eof 与任务终态一起判断，不能因单页无数据就断言结束。setup 日志仍保留原独立安全上限。
+
+tools/mcp/check_peer_builds.py 接受两份新鲜的 get_capabilities(session) 快照和发布产物 SHA-256，可选预期提交号；要求设备 1259251361 / 1815504540 唯一、Windows 协商成功、观察在五分钟内，协议/版本/提交/磁盘哈希一致。脚本不连接或部署；快照是调用方提供的证据，on_disk_release_match 不能当成已加载映像证明。构建时需显式提供 RUSTDESK_MCP_BUILD_COMMIT 才能核对源码提交号。
+
+### P1/P2 回归面与最小化复核
+
+下表补充上一节的 P0 回归面。所有新增实现保留在 MCP 专用模块；没有新增第三方依赖或修改子模块引用。
+
+| 已有文件 | 必须改变的既有路径 |
+| --- | --- |
+| libs/agent_mcp/src/catalog.rs、http.rs | 注册就绪等待及使用独立等待配额，避免长等待挤占控制调用。 |
+| libs/agent_mcp/src/process.rs、workspace.rs | 新探针、传输回执接口及可选参数的 schema/is_tool 注册；旧参数默认值不变。 |
+| src/agent_mcp/mod.rs、session.rs | MCP 会话增加 readiness 状态、info 的只读注解、连接轮次重置和工具路由；原认证及重连流程不改。 |
+| src/client/io_loop.rs | 仅两行 MCP 条件钩子，消费自有文件探针回包，避免进入普通延迟统计；其他消息继续原路径。 |
+| src/agent_mcp/process/mod.rs | 新探针/工作区传输仍通过原授权身份和存储互斥；协商等待可接受剩余时间预算。 |
+| src/agent_mcp/process/environment.rs | 原观察结果附加 preflight；版本探针为独立显式函数，不在只读观察时执行。 |
+| src/agent_mcp/process/diagnostics.rs | 原异常和监控警告附加上下文/错误码/清理证据；不改变取消或成功判断。 |
+| src/agent_mcp/process/worker.rs、store.rs | 可选 head_tail 分支、对应状态/读取路由及编码来源；未选择新策略仍使用旧 capture。worker 增加自身版本观察供诊断。 |
+| src/agent_mcp/process/output.rs、read_file.rs | 仅附加生产者声明和读取端解码元信息，不更换解码器或字节游标算法。 |
+| src/agent_mcp/process/workspace.rs、workspace_files.rs | 新下载/上传状态分支；原上传只增加可选块哈希的写入前校验和返回哈希，原替换流程不重写。 |
+| tools/mcp/process-check/main.rs、Cargo.toml | 直接包含新增生产模块；补齐既有 Windows Registry feature，未增加库依赖；该夹具不替代桌面应用和网络认证测试。 |
+| libs/agent_mcp/tests/protocol.rs、src/agent_mcp/auth/tests.rs、src/agent_mcp/process/tests.rs、tools/mcp/test_process_worker.py | 更新 schema/工具计数并新增回归用例，无放宽原断言或删除原用例。 |
+| docs/agent-mcp-build-jobs.md | 保存反馈判断、接口边界、回归面和本次未运行验收状态。 |
+
+新增生产实现为 readiness.rs、process/preflight.rs、preflight_windows.rs、download.rs、head_tail.rs；沿用上一轮 P0 的 RPC、协商和核对模块。新测试覆盖同 UUID 认证延迟、过期/错误文件 nonce、原回执丢失后同 ID 幂等、双客户端争用同 ID、5 MiB 分块断点续传、错误块/前缀、收件回执丢失、已完成记录删除以及首尾日志缺口与未截断窗口。已有心跳中断、近容量和断线用例继续保留。Windows worker 崩溃后实际 Job Object 核对、文件共享异常和完整桌面认证/重连仍需后续 Windows 回归，不以模拟用例代替。
+
+### 本次源码审查结果与验证限制
+
+已按最终 diff 检查旧路径改动的必要性：普通远控输入、Flutter UI、共享协议/trait、默认日志收集、旧文件传输和源码同步没有重写；feature off 不进入新增运行逻辑。源码审查修正了首尾日志未截断窗口漏读、旧协议断言未包含新策略、缺少父目录时状态查询失败、默认 D: 根存在但不可用的选择及完成下载记录缺乏回收入口。
+
+本次只运行 Rustfmt 语法解析（emit stdout、skip_children，无格式重写）、Python ast.parse 和 git diff --check。它们不能验证 Rust 类型、链接、Windows API 运行或网络协议集成。新增测试和发布核验脚本均未执行。没有再次调用 Cursor、修改桥接或预设、运行 Cargo、连接远端或部署程序；按照用户指令将这些未编译的源码改动提交到当前 master，本地提交后不 push。

@@ -88,6 +88,14 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
         return Err("Job is already terminal".into());
     }
     state["worker_pid"] = json!(std::process::id());
+    let runtime = super::capabilities::observe();
+    state["worker_runtime"] = json!({"protocol":runtime["protocol"],"package_version":runtime["package_version"],
+        "build_commit":runtime["build_commit"],"executable_sha256":runtime["executable_sha256"],
+        "executable_hash_scope":runtime["executable_hash_scope"]});
+    if let Err(error) = super::reconcile::worker_identity(&mut state) {
+        super::diagnostics::Failure::message("read_worker_identity", error)
+            .warn(&mut state, "recovery_identity");
+    }
     state["phase"] = json!("prepare");
     state["termination_requested"] = json!(false);
     match platform::Identity::new(None).and_then(|identity| identity.environment()) {
@@ -120,6 +128,7 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
 
 fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
     let mut spec = store::read_json(&dir.join("request.json"))?;
+    state["producer_encoding_hint"] = json!(spec["producer_encoding_hint"].as_str().unwrap_or("unknown"));
     spec["session"] = json!("worker");
     rustdesk_agent_mcp::process::validate("run_process", &spec)?;
     let stdout = File::create(dir.join("stdout.log")).map_err(|e| e.to_string())?;
@@ -175,7 +184,7 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
         }
     }
     state["phase"] = json!("command_start");
-    let mut child = platform::Child::spawn(&mut command).map_err(|error| {
+    let mut child = super::reconcile::spawn(&mut command, dir, state, "command").map_err(|error| {
         let error = error.record(state);
         format!("Start remote executable {} in cwd {}: {error}; verify the executable path, working directory and PATH with get_environment", spec["executable"], spec["cwd"])
     })?;
@@ -194,7 +203,10 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
     state["logs_retained"] = json!(retain);
     let log_policy = spec["log_limit_policy"].as_str().unwrap_or("truncate");
     state["log_limit_policy"] = json!(log_policy);
-    let out = capture(
+    let out = if log_policy == "head_tail" && retain {
+        super::head_tail::capture(output, stdout, dir.join("stdout.tail"), limit,
+            stop.clone(), exceeded.clone(), failed.clone())
+    } else { capture(
         output,
         stdout,
         limit,
@@ -202,9 +214,12 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
         stop.clone(),
         exceeded.clone(),
         failed.clone(),
-    )
+    ) }
     .map_err(|e| e.to_string())?;
-    let err = match capture(
+    let err = match if log_policy == "head_tail" && retain {
+        super::head_tail::capture(errors, stderr, dir.join("stderr.tail"), limit,
+            stop.clone(), exceeded.clone(), failed.clone())
+    } else { capture(
         errors,
         stderr,
         limit,
@@ -212,7 +227,7 @@ fn execute(dir: &Path, state: &mut serde_json::Value) -> Result<(), String> {
         stop.clone(),
         exceeded.clone(),
         failed.clone(),
-    ) {
+    ) } {
         Ok(thread) => thread,
         Err(e) => {
             child.stop()?;

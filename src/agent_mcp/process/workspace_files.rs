@@ -10,6 +10,82 @@ use std::{
 
 const CHUNK: usize = 16 * 1024;
 
+fn status_plain(path: &Path) -> Result<fs::Metadata,String> {
+    let meta = fs::symlink_metadata(path).map_err(|e|e.to_string())?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 { return Err("Upload status refuses reparse points".into()); }
+    }
+    if meta.file_type().is_symlink() { return Err("Upload status refuses symbolic links".into()); }
+    Ok(meta)
+}
+
+pub(super) fn upload_status(root: &Path, args: &Value) -> Result<Value, String> {
+    super::workspace::idle(root)?;
+    let path = args["path"].as_str().ok_or("Missing path")?;
+    let total = args["total_bytes"].as_u64().ok_or("Missing total_bytes")?;
+    let hash = args["sha256"].as_str().ok_or("Missing sha256")?;
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("sha256 must contain 64 hexadecimal characters".into());
+    }
+    let parts: Vec<_> = path.split('/').collect();
+    if !(2..=32).contains(&parts.len()) || !matches!(parts[0],"source"|"build"|"artifacts"|"reports")
+        || parts.iter().any(|p|p.is_empty() || matches!(*p,"."|"..") || p.contains(['\\',':','\0'])
+            || (cfg!(windows) && p.ends_with(['.',' ']))) {
+        return Err("Invalid workspace upload status path".into());
+    }
+    let mut absolute = root.to_owned();
+    let mut missing = false;
+    for part in parts {
+        if !missing {
+            if absolute.try_exists().map_err(|e|e.to_string())? {
+                if !status_plain(&absolute)?.is_dir() { return Err("Upload status parent is not a directory".into()); }
+            } else { missing = true; }
+        }
+        absolute.push(part);
+    }
+    let mut result = json!({"workspace_id":args["workspace_id"],"path":path,
+        "total_bytes":total,"sha256":hash.to_ascii_lowercase(),"complete":false,
+        "next_offset":0,"state":"not_started","request_replayed":false});
+    if absolute.try_exists().map_err(|e| e.to_string())? {
+        if !status_plain(&absolute)?.is_file() { return Err("Upload status target is not a regular file".into()); }
+        let (size, actual) = digest(&absolute)?;
+        if size == total && actual.eq_ignore_ascii_case(hash) {
+            result["state"] = json!("completed");
+            result["complete"] = json!(true);
+            result["next_offset"] = json!(total);
+            result["verified"] = json!(true);
+            return Ok(result);
+        }
+        result["destination_matches"] = json!(false);
+    }
+    let staging = root.join(".uploads").join(format!("{:x}", Sha256::digest(path.as_bytes())));
+    if staging.try_exists().map_err(|e| e.to_string())? {
+        for directory in [root.join(".uploads"), staging.clone()] {
+            if !status_plain(&directory)?.is_dir() {
+                return Err("Upload status refuses linked staging directories".into());
+            }
+        }
+        if !status_plain(&staging.join("upload.json"))?.is_file() { return Err("Upload metadata is not a regular file".into()); }
+        let metadata = store::read_json(&staging.join("upload.json"))?;
+        if metadata["path"] != path || metadata["total_bytes"] != total
+            || metadata["sha256"] != hash.to_ascii_lowercase() {
+            return Err("Upload status identity conflicts with retained upload; preserve for review".into());
+        }
+        let data = staging.join("data");
+        let meta = status_plain(&data)?;
+        if !meta.is_file() || meta.len() > total {
+            return Err("Invalid staged upload data; preserve for review".into());
+        }
+        let (size, prefix_hash) = digest(&data)?;
+        result["state"] = json!("in_progress");
+        result["next_offset"] = json!(size);
+        result["staged_sha256"] = json!(prefix_hash);
+    }
+    Ok(result)
+}
+
 #[path = "workspace_replace.rs"]
 mod replacement;
 
@@ -84,6 +160,11 @@ pub(super) fn call(root: &Path, operation: &str, args: &Value) -> Result<Value, 
     let data = STANDARD
         .decode(args["data_base64"].as_str().ok_or("Missing data_base64")?)
         .map_err(|_| "Invalid base64 chunk")?;
+    let chunk_hash = format!("{:x}",Sha256::digest(&data));
+    if args.get("chunk_sha256").is_some_and(|expected|
+        !expected.as_str().is_some_and(|hash|hash.eq_ignore_ascii_case(&chunk_hash))) {
+        return Err("Upload chunk SHA-256 mismatch; no bytes written".into());
+    }
     let total = args["total_bytes"].as_u64().ok_or("Missing total_bytes")?;
     let sha256 = args["sha256"].as_str().ok_or("Missing sha256")?;
     if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -102,7 +183,7 @@ pub(super) fn call(root: &Path, operation: &str, args: &Value) -> Result<Value, 
     let absolute = target(root, path, true)?;
     let replacement = args.get("replace").map(|options| replacement::Replacement::new(root, path, options)).transpose()?;
     let complete = || {
-        let mut result = json!({"workspace_id":args["workspace_id"],"path":path,"remote_path":absolute,"next_offset":total,"total_bytes":total,"sha256":sha256.to_ascii_lowercase(),"complete":true});
+        let mut result = json!({"workspace_id":args["workspace_id"],"path":path,"remote_path":absolute,"next_offset":total,"total_bytes":total,"sha256":sha256.to_ascii_lowercase(),"complete":true,"received_chunk_sha256":chunk_hash});
         if let Some(replacement) = &replacement {
             result["replacement"] = replacement.info();
         }
@@ -213,6 +294,6 @@ pub(super) fn call(root: &Path, operation: &str, args: &Value) -> Result<Value, 
         return Ok(complete());
     }
     Ok(
-        json!({"workspace_id":args["workspace_id"],"path":path,"next_offset":next,"total_bytes":total,"complete":false}),
+        json!({"workspace_id":args["workspace_id"],"path":path,"next_offset":next,"total_bytes":total,"complete":false,"received_chunk_sha256":chunk_hash}),
     )
 }

@@ -1,7 +1,12 @@
 mod diagnostics;
+mod capabilities;
+mod reconcile;
 mod artifact;
 mod environment;
 mod output;
+mod head_tail;
+mod download;
+mod preflight;
 mod read_file;
 mod presentation;
 mod platform;
@@ -28,8 +33,34 @@ pub(super) fn plain_terminal_output(text: &str) -> String {
 }
 
 #[derive(Default)]
+struct Pending {
+    received: bool,
+    result: Option<Result<Value, String>>,
+}
+
+impl Pending {
+    fn accept(&mut self, response: &Value) {
+        self.received = true;
+        if response["received"] == true && response.get("result").is_none() && response.get("error").is_none() {
+            return;
+        }
+        self.result = Some(match response["error"].as_str() {
+            Some(error) => Err(error.into()),
+            None => response.get("result").cloned().ok_or_else(|| "Missing process result".into()),
+        });
+    }
+}
+
+#[derive(Default)]
 pub(super) struct State {
-    pending: Mutex<HashMap<String, Option<Result<Value, String>>>>,
+    pending: Mutex<HashMap<String, Pending>>,
+    capabilities: Mutex<Option<(u64, Value)>>,
+}
+
+impl State {
+    pub(super) fn negotiated(&self, generation: u64) -> bool {
+        self.capabilities.lock().unwrap().as_ref().is_some_and(|(observed,_)| *observed == generation)
+    }
 }
 
 pub(crate) fn is_message(msg: &Message) -> bool {
@@ -101,13 +132,7 @@ pub(crate) fn response(peer: &str, terminal: bool, msg: &Message) -> bool {
         if let Some(state) = states().lock().unwrap().get(&id).cloned() {
             if let Some(id) = response["id"].as_str() {
                 if let Some(p) = state.process.pending.lock().unwrap().get_mut(id) {
-                    *p = Some(match response["error"].as_str() {
-                        Some(e) => Err(e.into()),
-                        None => response
-                            .get("result")
-                            .cloned()
-                            .ok_or_else(|| "Missing process result".into()),
-                    });
+                    p.accept(&response);
                 }
             }
         }
@@ -122,17 +147,69 @@ pub(super) fn call(
     name: &str,
     args: &Map<String, Value>,
 ) -> ToolResult {
-    if !s.is_terminal() {
-        return Err("An authenticated terminal session is required".into());
+    if name != "get_process_capabilities" {
+        let peer = state.process.capabilities.lock().unwrap().clone();
+        if let Some((generation, peer)) = peer {
+            let check = if generation != state.automation.generation() {
+                Err("Connection changed; negotiate get_capabilities(session) again before sending operations".into())
+            } else {
+                rustdesk_agent_mcp::process_rpc::validate_peer(&peer, name, args)
+            };
+            check.map_err(|error: String| rustdesk_agent_mcp::process_rpc::failure(name,
+                &uuid::Uuid::new_v4().to_string(), args, "not_sent", "remote_capability_mismatch", &error))?;
+        }
     }
-    session::ready(s)?;
+    request(id, s, state, name, args, None)
+}
+
+pub(super) fn negotiate(id: SessionID, s: &crate::flutter::FlutterSession,
+    state: &SessionState, args: &Map<String, Value>) -> ToolResult {
+    negotiate_with_timeout(id, s, state, args, None)
+}
+
+pub(super) fn negotiate_with_timeout(id: SessionID, s: &crate::flutter::FlutterSession,
+    state: &SessionState, args: &Map<String, Value>, timeout: Option<Duration>) -> ToolResult {
+    let generation = state.automation.generation();
+    let query = json!({"session":args.get("session")});
+    let response = request(id, s, state, "get_process_capabilities", query.as_object().ok_or("Invalid capability query")?, timeout);
+    let peer = match response {
+        Ok(response) => response["structuredContent"].clone(),
+        Err(error) if error == "Unknown process operation" => {
+            return Ok(success(json!({"session":id.to_string(),"device_id":s.lc.read().unwrap().get_id(),"negotiated":false,
+                "reason":"legacy_peer","operations":[],"recovery":"Update the remote MCP build before relying on its operations or parameter limits"})));
+        }
+        Err(error) => return Err(error),
+    };
+    if peer["protocol"] != model::WIRE_VERSION || peer["negotiated"] != true || !peer["operations"].is_array() {
+        return Err("Invalid remote capability response".into());
+    }
+    if generation != state.automation.generation() {
+        return Err("Connection changed during capability negotiation; query again".into());
+    }
+    *state.process.capabilities.lock().unwrap() = Some((generation, peer.clone()));
+    Ok(success(json!({"session":id.to_string(),"negotiated":true,
+        "device_id":s.lc.read().unwrap().get_id(),"connection_generation":generation,"observed_at_ms":store::now(),
+        "controller":capabilities::observe(),"peer":peer})))
+}
+
+fn request(id: SessionID, s: &crate::flutter::FlutterSession, state: &SessionState,
+    name: &str, args: &Map<String, Value>, timeout: Option<Duration>) -> ToolResult {
     let request_id = uuid::Uuid::new_v4().to_string();
+    let failure = |delivery: &str, kind: &str, message: &str| {
+        rustdesk_agent_mcp::process_rpc::failure(name, &request_id, args, delivery, kind, message)
+    };
+    let not_ready = |delivery: &str, message: &str| failure(delivery,
+        if message == "Session is not authenticated yet" { "session_auth_required" } else { "session_disconnected" }, message);
+    if !s.is_terminal() {
+        return Err(failure("not_sent", "session_auth_required", "An authenticated terminal session is required"));
+    }
+    session::ready(s).map_err(|e| not_ready("not_sent", &e))?;
     {
         let mut pending = state.process.pending.lock().unwrap();
         if pending.len() >= 8 {
-            return Err("Too many pending process requests on this session".into());
+            return Err(failure("not_sent", "local_request_capacity", "Too many pending process requests on this session"));
         }
-        pending.insert(request_id.clone(), None);
+        pending.insert(request_id.clone(), Pending::default());
     }
     struct Guard<'a>(&'a State, String);
     impl Drop for Guard<'_> {
@@ -143,34 +220,35 @@ pub(super) fn call(
     let _guard = Guard(&state.process, request_id.clone());
     let generation = state.automation.generation();
     let msg = encode(
-        &json!({"protocol":model::WIRE_VERSION,"id":request_id,"operation":name,"arguments":args}),
-    )?;
-    session::send(s, crate::client::Data::Message(msg))?;
+        &json!({"protocol":model::WIRE_VERSION,"id":request_id,"operation":name,"arguments":args,"receipts":true}),
+    ).map_err(|e| failure("not_sent", "invalid_request", &e))?;
+    session::send(s, crate::client::Data::Message(msg)).map_err(|e| failure("not_sent", "session_disconnected", &e))?;
     let started = Instant::now();
-    let request_timeout = if name == "wait_for_process" {
-        Duration::from_millis(args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(1000).min(60000) + 3000)
-            .max(Duration::from_secs(15))
-    } else {
-        Duration::from_secs(15)
-    };
+    let request_timeout = timeout.unwrap_or_else(|| rustdesk_agent_mcp::process_rpc::timeout(name, args));
     loop {
-        let current = session::get(id)?;
+        let received = state.process.pending.lock().unwrap().get(&request_id).is_some_and(|p| p.received);
+        let delivery = if received { "remote_received" } else { "queued" };
+        let current = session::get(id).map_err(|e| failure(delivery, "session_disconnected", &e))?;
         if !Arc::ptr_eq(&current, s) || generation != state.automation.generation() {
-            return Err("Connection changed; query the same job_id after reconnect".into());
+            return Err(failure(delivery, "session_disconnected", "Connection changed; query the same job_id after reconnect"));
         }
-        session::ready(s)?;
+        session::ready(s).map_err(|e| not_ready(delivery, &e))?;
         if let Some(result) = state
             .process
             .pending
             .lock()
             .unwrap()
             .get_mut(&request_id)
-            .and_then(Option::take)
+            .and_then(|p| p.result.take())
         {
-            return result.map(success);
+            return match result {
+                Ok(result) => Ok(success(result)),
+                Err(error) if name == "get_process_capabilities" && error == "Unknown process operation" => Err(error),
+                Err(error) => Err(failure("remote_received", "remote_operation_error", &error)),
+            };
         }
         if started.elapsed() >= request_timeout {
-            return Err("Remote process request timed out. Peer may need an mcp build. For run_process, query/reuse the SAME job_id; never retry with a new ID automatically.".into());
+            return Err(failure(delivery, "remote_request_timeout", &format!("Remote process request timed out: {name} ({request_id}), deadline {} ms", request_timeout.as_millis())));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -231,10 +309,16 @@ pub(crate) fn dispatch(
         }
     };
     let tx = tx.clone();
+    if request["receipts"] == true {
+        send_reply(&json!({"protocol":model::WIRE_VERSION,"id":request["id"],"received":true}), &tx);
+    }
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let result = (|| {
             let _identity_guard = identity.enter()?;
+            if request["operation"] == "get_process_capabilities" {
+                return Ok(capabilities::observe());
+            }
             if request["operation"] == "get_environment" {
                 return environment::observe(&identity, &request["arguments"]);
             }
@@ -242,7 +326,7 @@ pub(crate) fn dispatch(
                 return read_file::call(&request["arguments"]);
             }
             let operation = request["operation"].as_str().ok_or("Missing operation")?;
-            let _lock = if matches!(operation, "run_process" | "remove_process" | "remove_processes")
+            let _lock = if matches!(operation, "run_process" | "remove_process" | "remove_processes" | "reconcile_process" | "probe_environment")
                 || rustdesk_agent_mcp::workspace::is_tool(operation)
             {
                 Some(STORE_LOCK.lock().unwrap())
@@ -250,6 +334,9 @@ pub(crate) fn dispatch(
                 None
             };
             let store = store::Store::new(identity.root()?)?;
+            if operation == "probe_environment" {
+                return environment::probe(&identity,&store,&request["arguments"]);
+            }
             if rustdesk_agent_mcp::workspace::is_tool(operation) {
                 return workspace::call(&store, operation, &request["arguments"], |dir| {
                     identity.launch(dir)
@@ -273,7 +360,11 @@ fn reply(id: &Value, result: Result<Value, String>, tx: &Option<crate::server::S
         }
         Err(error) => json!({"protocol":model::WIRE_VERSION,"id":id,"error":error}),
     };
-    match encode(&response) {
+    send_reply(&response, tx);
+}
+
+fn send_reply(response: &Value, tx: &Option<crate::server::Sender>) {
+    match encode(response) {
         Ok(msg) => {
             if let Some(tx) = tx {
                 if let Err(e) = tx.send((tokio::time::Instant::now(), Arc::new(msg))) {

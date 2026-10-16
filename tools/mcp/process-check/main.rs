@@ -21,12 +21,24 @@ mod terminal_service {
 }
 #[path = "../../../src/agent_mcp/process/diagnostics.rs"]
 mod diagnostics;
+#[path = "../../../src/agent_mcp/process/capabilities.rs"]
+mod capabilities;
+#[path = "../../../src/agent_mcp/process/reconcile.rs"]
+mod reconcile;
+#[path = "../../../src/agent_mcp/process/retention.rs"]
+mod retention;
 #[path = "../../../src/agent_mcp/process/store.rs"]
 mod store;
 #[path = "../../../src/agent_mcp/process/platform.rs"]
 mod platform;
 #[path = "../../../src/agent_mcp/process/output.rs"]
 mod output;
+#[path = "../../../src/agent_mcp/process/head_tail.rs"]
+mod head_tail;
+#[path = "../../../src/agent_mcp/process/download.rs"]
+mod download;
+#[path = "../../../src/agent_mcp/process/preflight.rs"]
+mod preflight;
 #[path = "../../../src/agent_mcp/process/read_file.rs"]
 mod read_file;
 #[path = "../../../src/agent_mcp/process/presentation.rs"]
@@ -54,7 +66,22 @@ mod tests;
 
 fn main() {
     let mut args = std::env::args_os().skip(1);
-    if args.next().as_deref() != Some(std::ffi::OsStr::new("--mcp-process-worker")) {
+    let operation = args.next();
+    if operation.as_deref() == Some(std::ffi::OsStr::new("--mcp-reconcile-job")) {
+        let result = (|| {
+            let path = std::path::PathBuf::from(args.next().ok_or("Missing job directory")?);
+            if args.next().is_some() { return Err("Unexpected arguments".into()); }
+            let id = path.file_name().and_then(|s| s.to_str()).ok_or("Invalid job directory")?;
+            let store = store::Store::new(path.parent().ok_or("Missing store")?.to_owned())?;
+            store.call("reconcile_process", &serde_json::json!({"job_id":id}))
+        })();
+        match result {
+            Ok(value) => println!("{value}"),
+            Err(error) => { eprintln!("{error}"); std::process::exit(1); }
+        }
+        return;
+    }
+    if operation.as_deref() != Some(std::ffi::OsStr::new("--mcp-process-worker")) {
         eprintln!("Expected --mcp-process-worker DIRECTORY");
         std::process::exit(2);
     }

@@ -36,6 +36,7 @@ pub(super) fn call(args: &Value) -> Result<Value, String> {
     }
     let next = offset + bytes.len() as u64;
     let mut result = super::output::decode(&bytes, args["encoding"].as_str().unwrap_or("auto"));
+    super::output::provenance(&mut result,args,&Value::Null);
     super::presentation::annotate(&mut result);
     if args["include_base64"] != false || !result["text"].is_string() {
         result["data_base64"] = json!(STANDARD.encode(&bytes));

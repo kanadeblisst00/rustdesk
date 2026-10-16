@@ -18,6 +18,34 @@ use std::{
 use tower::ServiceExt;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+#[test]
+fn remote_negotiation_and_upload_recovery_schemas_are_available_without_local_feature() {
+    let tools = catalog::tools();
+    let capabilities = tools.iter().find(|t| t["name"] == "get_capabilities").unwrap();
+    catalog::validate(&capabilities["inputSchema"], &json!({"session":"terminal"}), "arguments").unwrap();
+    rustdesk_agent_mcp::process::validate("get_process_capabilities", &json!({"session":"terminal"})).unwrap();
+    rustdesk_agent_mcp::process::validate("reconcile_process", &json!({"session":"terminal","job_id":"original"})).unwrap();
+    rustdesk_agent_mcp::process::validate("get_workspace_upload", &json!({"session":"terminal","workspace_id":"w",
+        "path":"source/file","total_bytes":1,"sha256":"0".repeat(64)})).unwrap();
+}
+
+#[test]
+fn readiness_preflight_and_download_arguments_respect_remote_limits() {
+    let tools = catalog::tools();
+    let ready = tools.iter().find(|tool| tool["name"] == "wait_for_session_ready").unwrap();
+    catalog::validate(&ready["inputSchema"], &json!({"session":"s","channel":"files","timeout_ms":30000}), "arguments").unwrap();
+    assert!(catalog::validate(&ready["inputSchema"], &json!({"session":"s","timeout_ms":30001}), "arguments").is_err());
+    let validate = rustdesk_agent_mcp::process::validate;
+    validate("probe_environment", &json!({"session":"s","probe_id":"versions","executables":["rustc","cargo"]})).unwrap();
+    assert!(validate("probe_environment", &json!({"session":"s","probe_id":"versions","executables":["a","b","c","d","e"]})).is_err());
+    validate("get_environment", &json!({"session":"s","required_paths":[{"id":"deployment","path":"C:/private/deployment.json","kind":"file"}]})).unwrap();
+    let mut chunk = json!({"session":"s","workspace_id":"w","transfer_id":"t","max_bytes":262144});
+    validate("read_workspace_download", &chunk).unwrap();
+    chunk["max_bytes"] = json!(262145);
+    assert!(validate("read_workspace_download", &chunk).is_err());
+    validate("finish_workspace_download", &json!({"session":"s","workspace_id":"w","transfer_id":"t","received_bytes":0,"received_sha256":"0".repeat(64)})).unwrap();
+}
 #[derive(Default)]
 struct Fake {
     disabled: AtomicBool,
@@ -156,7 +184,7 @@ fn automation_tools_validate_targets_and_read_only_annotations() {
     }
     assert_eq!(backend.calls.load(Ordering::Relaxed), 0);
     let tools = catalog::tools();
-    assert_eq!(tools.len(), if cfg!(feature = "local") { 69 } else { 65 });
+    assert_eq!(tools.len(), if cfg!(feature = "local") { 78 } else { 74 });
     for tool in tools
         .iter()
         .filter(|t| rustdesk_agent_mcp::automation::is_tool(t["name"].as_str().unwrap()))
@@ -229,10 +257,10 @@ fn log_limit_policy_is_explicit_and_shared_by_workspace_commands() {
         let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
         let schema = &tool["inputSchema"]["properties"]["log_limit_policy"];
         assert_eq!(schema["default"], "truncate");
-        assert_eq!(schema["enum"], json!(["truncate", "terminate"]));
+        assert_eq!(schema["enum"], json!(["truncate", "terminate", "head_tail"]));
     }
     let mut args = json!({"session":"s","job_id":"noisy","executable":"program","cwd":std::env::temp_dir()});
-    for policy in ["truncate", "terminate"] {
+    for policy in ["truncate", "terminate", "head_tail"] {
         args["log_limit_policy"] = json!(policy);
         rustdesk_agent_mcp::process::validate("run_process", &args).unwrap();
     }

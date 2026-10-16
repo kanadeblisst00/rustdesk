@@ -1,5 +1,13 @@
 use serde_json::{json, Value};
 
+pub(super) fn provenance(result: &mut Value, args: &Value, producer: &Value) {
+    result["producer_encoding_hint"] = json!(producer.as_str().unwrap_or("unknown"));
+    result["producer_encoding_source"] = json!("caller_declared; not detected or forced");
+    result["requested_encoding"] = json!(args["encoding"].as_str().unwrap_or("auto"));
+    result["decoding_encoding"] = result["encoding"].clone();
+    result["byte_cursor_unit"] = json!("original_bytes");
+}
+
 pub(super) fn decode(data: &[u8], requested: &str) -> Value {
     if requested == "base64" {
         return json!({"text":null,"encoding":"base64","decoding_error":null});
