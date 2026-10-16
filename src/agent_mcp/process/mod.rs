@@ -148,9 +148,17 @@ pub(super) fn call(
     name: &str,
     args: &Map<String, Value>,
 ) -> ToolResult {
+    let connection_generation = (name == "read_process_output" && args.contains_key("include_base64"))
+        .then(||state.automation.generation());
     if name != "get_process_capabilities" {
         let peer = state.process.capabilities.lock().unwrap().clone();
         if let Some((generation, peer)) = peer {
+            if connection_generation == Some(generation) && generation == state.automation.generation() {
+                if let Some(compatibility) = rustdesk_agent_mcp::process_rpc::LogReadCompatibility::negotiated(&peer,name,args) {
+                    let result = call(id,s,state,name,&compatibility.arguments);
+                    return compatibility.finish(result);
+                }
+            }
             let check = if generation != state.automation.generation() {
                 Err("Connection changed; negotiate get_capabilities(session) again before sending operations".into())
             } else {
@@ -160,7 +168,17 @@ pub(super) fn call(
                 &uuid::Uuid::new_v4().to_string(), args, "not_sent", "remote_capability_mismatch", &error))?;
         }
     }
-    request(id, s, state, name, args, None)
+    let result = request(id, s, state, name, args, None);
+    if let Some(connection_generation) = connection_generation {
+        if let Err(error) = &result {
+            if let Some(compatibility) = rustdesk_agent_mcp::process_rpc::LogReadCompatibility::rejected(error,name,args) {
+                if connection_generation != state.automation.generation() { return result; }
+                let result = call(id,s,state,name,&compatibility.arguments);
+                return compatibility.finish(result);
+            }
+        }
+    }
+    result
 }
 
 pub(super) fn negotiate(id: SessionID, s: &crate::flutter::FlutterSession,
