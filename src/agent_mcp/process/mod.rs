@@ -1,4 +1,5 @@
 mod diagnostics;
+mod worker_record;
 mod capabilities;
 mod reconcile;
 mod artifact;
@@ -387,6 +388,7 @@ pub(crate) fn worker_requested() -> bool {
     };
     if let Err(e) = result {
         log::error!("Process worker: {e}");
+        std::process::exit(1);
     }
     true
 }

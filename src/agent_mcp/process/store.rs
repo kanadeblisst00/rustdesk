@@ -166,6 +166,7 @@ impl Store {
         state["archived"] = json!(archived);
         state["observed_at_ms"] = json!(now());
         state["heartbeat_age_ms"] = json!(now().saturating_sub(state["updated_at_ms"].as_u64().unwrap_or(0)));
+        super::worker_record::annotate(&dir,id,&mut state);
         if !terminal(&state)
             && now().saturating_sub(state["updated_at_ms"].as_u64().unwrap_or(0)) > 30_000
         {

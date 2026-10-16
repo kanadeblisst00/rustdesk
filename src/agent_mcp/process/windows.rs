@@ -293,6 +293,7 @@ impl Identity {
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
+            let dir = dir.to_owned();
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             std::thread::Builder::new()
                 .name("mcp-process-reaper".into())
@@ -306,10 +307,13 @@ impl Identity {
                             return;
                         }
                     };
+                    let observer = super::super::worker_record::Observer::start(&dir,child.id());
                     if let Err(e) = tx.send(Ok(())) {
                         hbb_common::log::debug!("Worker launch reply: {e}");
                     }
-                    if let Err(e) = child.wait() {
+                    let status = child.wait();
+                    if let Some(observer) = observer { observer.finish(status.as_ref().map_err(ToString::to_string)); }
+                    if let Err(e) = status {
                         hbb_common::log::warn!("Wait for job worker: {e}");
                     }
                 })
@@ -359,7 +363,9 @@ impl Identity {
             hbb_common::log::warn!("Destroy user environment: {e}");
         }
         result.map_err(|e| Failure::windows("CreateProcessAsUserW(worker)", e))?;
-        let _process = Handle(process.hProcess);
+        use std::os::windows::io::{FromRawHandle,OwnedHandle};
+        let handle = unsafe { OwnedHandle::from_raw_handle(process.hProcess.0) };
+        drop(super::super::worker_record::watch_windows(dir,process.dwProcessId,handle));
         let _thread = Handle(process.hThread);
         Ok(())
     }
