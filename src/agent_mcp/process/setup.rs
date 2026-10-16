@@ -86,7 +86,7 @@ pub(super) fn initialize(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let log = File::create(dir.join("setup.log")).map_err(|e| e.to_string())?;
-    let mut child = platform::Child::spawn(&mut command).map_err(|error| error.record(state))?;
+    let mut child = super::reconcile::spawn(&mut command, dir, state, "setup").map_err(|error| error.record(state))?;
     state["setup_pid"] = json!(child.process.id());
     state["termination_requested"] = json!(true);
     state["termination_reason"] = json!("worker_failure");

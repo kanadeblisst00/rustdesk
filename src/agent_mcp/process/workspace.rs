@@ -296,6 +296,12 @@ pub(super) fn call(
         return Err("Workspace must be a real directory".into());
     }
     let mut metadata = store::read_json(&dir.join("workspace.json"))?;
+    if matches!(operation,"begin_workspace_download"|"get_workspace_download"|"remove_workspace_download"|"read_workspace_download"|"finish_workspace_download") {
+        return super::download::call(store,&dir,&metadata,operation,args);
+    }
+    if operation == "get_workspace_upload" {
+        return super::workspace_files::upload_status(&dir, args);
+    }
     if matches!(operation, "read_workspace_file" | "write_workspace_file") {
         return super::workspace_files::call(&dir, operation, args);
     }

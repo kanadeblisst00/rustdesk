@@ -9,11 +9,20 @@ impl Failure {
         self
     }
 
-    pub fn warn(self, state: &mut Value, stage: &str) {
+    pub fn warn(mut self, state: &mut Value, stage: &str) {
+        self.context(state,stage);
         hbb_common::log::warn!("Job monitor {stage}: {self}");
         state["monitor_warning_count"] = json!(state["monitor_warning_count"].as_u64().unwrap_or(0).saturating_add(1));
         state["monitor_warning"] = self.0;
         state["monitor_warning"]["stage"] = json!(stage);
+    }
+
+    fn context(&mut self, state: &Value, stage: &str) {
+        self.0["stage"] = json!(stage);
+        self.0["observed_at_ms"] = json!(super::store::now());
+        for key in ["job_id","worker_pid","execution_identity","worker_runtime"] {
+            if let Some(value) = state.get(key) { self.0[key] = value.clone(); }
+        }
     }
 
     pub fn message(operation: &str, message: impl ToString) -> Self {
@@ -26,6 +35,9 @@ impl Failure {
         #[cfg(windows)]
         {
             failure.0["win32_error"] = json!(error.raw_os_error());
+            if let Some(code) = error.raw_os_error().filter(|code| *code > 0 && *code <= 65535) {
+                failure.0["hresult"] = json!(format!("0x{:08X}",0x80070000u32 | code as u32));
+            }
         }
         failure
     }
@@ -37,6 +49,7 @@ impl Failure {
         failure.0["hresult"] = json!(format!("0x{code:08X}"));
         if code & 0xffff0000 == 0x80070000 {
             failure.0["win32_error"] = json!(code & 0xffff);
+            failure.0["os_error"] = json!(code & 0xffff);
         }
         failure
     }
@@ -47,7 +60,11 @@ impl Failure {
         self.0["termination_requested"] = json!(true);
         match process.kill() {
             Ok(()) => match process.wait() {
-                Ok(status) => self.0["exit_code"] = json!(status.code()),
+                Ok(status) => {
+                    self.0["exit_code"] = json!(status.code());
+                    self.0["startup_process_cleanup"] = json!("succeeded");
+                    if let Some(code) = status.code() { self.0["exit_code_hex"] = json!(format!("0x{:08X}",code as u32)); }
+                }
                 Err(error) => self.0["cleanup_error"] = json!(error.to_string()),
             },
             Err(error) => self.0["cleanup_error"] = json!(error.to_string()),
@@ -55,13 +72,16 @@ impl Failure {
         self
     }
 
-    pub fn record(self, state: &mut Value) -> String {
+    pub fn record(mut self, state: &mut Value) -> String {
+        self.context(state,state["phase"].as_str().unwrap_or("unknown"));
         let message = self.to_string();
-        for key in ["pid", "exit_code", "cleanup_error"] {
+        for key in ["pid", "exit_code", "exit_code_hex", "cleanup_error", "startup_process_cleanup"] {
             if let Some(value) = self.0.get(key) {
                 let field = match (state["phase"].as_str(), key) {
                     (Some("environment_setup"), "pid") => "setup_pid",
                     (Some("environment_setup"), "exit_code") => "setup_exit_code",
+                    (Some("environment_setup"), "exit_code_hex") => "setup_exit_code_hex",
+                    (Some("environment_setup"), "startup_process_cleanup") => "setup_startup_process_cleanup",
                     _ => key,
                 };
                 state[field] = value.clone();

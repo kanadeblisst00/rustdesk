@@ -64,7 +64,7 @@ pub(super) fn info(id: SessionID, s: &FlutterSession) -> Value {
     })).collect()
         })
         .unwrap_or_default();
-    json!({"session":id.to_string(),"device_id":lc.get_id(),
+    let mut details = json!({"session":id.to_string(),"device_id":lc.get_id(),
         "kind":if lc.conn_type==ConnType::TERMINAL{"terminal"}else if lc.conn_type==ConnType::FILE_TRANSFER{"files"}else{"desktop"},
         "connected":connected,"needs_password":!disconnected && !connected && lc.agent_auth.needs_password(),
         "authentication":if disconnected {"disconnected"} else if connected {"authenticated"} else {lc.agent_auth.name()},
@@ -72,7 +72,10 @@ pub(super) fn info(id: SessionID, s: &FlutterSession) -> Value {
         "platform":lc.peer_info.as_ref().map(|p|p.platform.clone()),
         "permissions":{"keyboard":*s.server_keyboard_enabled.read().unwrap(),
         "clipboard":*s.server_clipboard_enabled.read().unwrap(),"files":*s.server_file_transfer_enabled.read().unwrap(),
-        "view_only":lc.view_only.v}})
+        "view_only":lc.view_only.v}});
+    drop(lc);
+    super::readiness::annotate(s, &mut details);
+    details
 }
 
 pub(super) fn connect(args: &Map<String, Value>) -> ToolResult {

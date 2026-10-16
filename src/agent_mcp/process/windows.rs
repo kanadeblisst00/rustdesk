@@ -387,10 +387,11 @@ pub(in super::super) struct Child {
     stopped: bool,
 }
 impl Child {
-    pub fn spawn(command: &mut std::process::Command) -> Result<Self, Failure> {
+    pub fn spawn_named(command: &mut std::process::Command, name: &str) -> Result<Self, Failure> {
         use std::os::windows::process::CommandExt;
+        let name = wide(OsStr::new(name));
         let job =
-            Handle(unsafe { CreateJobObjectW(None, PCWSTR::null()) }.map_err(|e| Failure::windows("CreateJobObjectW", e))?);
+            Handle(unsafe { CreateJobObjectW(None, PCWSTR(name.as_ptr())) }.map_err(|e| Failure::windows("CreateJobObjectW", e))?);
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         unsafe {

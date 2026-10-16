@@ -213,7 +213,7 @@ async fn handle(
     let waiting = message.get("method").and_then(serde_json::Value::as_str) == Some("tools/call")
         && matches!(message
             .pointer("/params/name")
-            .and_then(serde_json::Value::as_str), Some("wait_for_event" | "wait_for_process"));
+            .and_then(serde_json::Value::as_str), Some("wait_for_event" | "wait_for_process" | "wait_for_session_ready"));
     let slots = if waiting {
         state.wait_slots
     } else {

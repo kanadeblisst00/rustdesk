@@ -1,6 +1,20 @@
 use serde_json::{json, Map, Value};
 
 pub(crate) fn tool_failure(name: &str, message: String, arguments: &Map<String, Value>) -> Value {
+    if let Some(mut error) = crate::process_rpc::details(&message) {
+        error["tool"] = json!(name);
+        error["session"] = json!(arguments.get("session"));
+        error["stage"] = json!(match error["kind"].as_str() {
+            Some("session_auth_required") => "authentication",
+            Some("session_disconnected") => "connection",
+            Some("remote_capability_mismatch") => "capability_negotiation",
+            _ if error["delivery_state"] == "not_sent" => "dispatch",
+            _ => "remote_response",
+        });
+        error["remote_job_state"] = json!("unknown");
+        return json!({"content":[{"type":"text","text":error["message"]}],
+            "isError":true,"structuredContent":{"error":error}});
+    }
     let kind = match message.as_str() {
         "Unknown or closed session"
         | "Session transport is closed"

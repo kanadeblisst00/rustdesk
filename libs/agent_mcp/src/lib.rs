@@ -10,6 +10,7 @@ pub mod http;
 pub mod local;
 pub mod pixels;
 pub mod process;
+pub mod process_rpc;
 pub mod queue;
 pub mod workspace;
 

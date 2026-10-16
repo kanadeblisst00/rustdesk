@@ -1,4 +1,17 @@
 use super::*;
+
+#[cfg(feature = "mcp")]
+#[test]
+fn process_receipt_is_not_a_result_and_legacy_final_replies_still_work() {
+    let mut pending = Pending::default();
+    pending.accept(&json!({"received":true}));
+    assert!(pending.received);
+    assert!(pending.result.is_none());
+    pending.accept(&json!({"result":{"state":"starting"}}));
+    assert_eq!(pending.result.take().unwrap().unwrap()["state"], "starting");
+    pending.accept(&json!({"error":"Unknown process operation"}));
+    assert_eq!(pending.result.take().unwrap().unwrap_err(), "Unknown process operation");
+}
 use std::path::PathBuf;
 
 struct Temp(PathBuf);
@@ -20,6 +33,136 @@ impl Drop for Temp {
 
 fn spec(id: &str) -> Value {
     json!({"session":"test","job_id":id,"executable":"test-command","cwd":std::env::temp_dir()})
+}
+
+#[test]
+fn head_tail_keeps_final_errors_and_reports_the_missing_byte_range() {
+    use std::{io::Cursor, sync::{Arc, atomic::AtomicBool}};
+    let temp = Temp::new();
+    let store = temp.store();
+    let mut request = spec("head-tail");
+    request["log_limit_policy"] = json!("head_tail");
+    let mut state = store.create(&request, |_|Ok(())).unwrap();
+    let dir = store.directory("head-tail").unwrap();
+    let bytes = [b"first line\n".as_slice(), &vec![b'x';4096], b"\nfinal compiler error\n"].concat();
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let failed = Arc::new(AtomicBool::new(false));
+    head_tail::capture(Cursor::new(bytes.clone()),std::fs::File::create(dir.join("stdout.log")).unwrap(),
+        dir.join("stdout.tail"),1024,Arc::new(AtomicBool::new(false)),exceeded.clone(),failed.clone())
+        .unwrap().join().unwrap().unwrap();
+    state["state"] = json!("exited");
+    store::write_json(&dir.join("state.json"),&state).unwrap();
+    assert!(exceeded.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!failed.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(store.status("head-tail").unwrap()["stdout_bytes"],bytes.len());
+    let first = store.call("read_process_output",&json!({"job_id":"head-tail","stream":"stdout","encoding":"utf-8"})).unwrap();
+    assert!(first["text"].as_str().unwrap().starts_with("first line\n"));
+    assert_eq!(first["eof"],false);
+    let tail = store.call("read_process_output",&json!({"job_id":"head-tail","stream":"stdout","offset":first["next_offset"],"encoding":"utf-8"})).unwrap();
+    assert!(tail["gap"].is_object());
+    assert_eq!(tail["next_offset"],bytes.len());
+    assert_eq!(tail["eof"],true);
+    let last = store.call("read_process_output",&json!({"job_id":"head-tail","stream":"stdout","tail_lines":1,"encoding":"utf-8","include_base64":false})).unwrap();
+    assert_eq!(last["text"],"final compiler error\n");
+    assert!(last.get("data_base64").is_none());
+    assert!(std::fs::metadata(dir.join("stdout.log")).unwrap().len() <= 512);
+}
+
+#[test]
+fn head_tail_reads_a_contiguous_tail_window_before_truncation() {
+    use std::{io::Cursor, sync::{Arc, atomic::AtomicBool}};
+    let temp = Temp::new();
+    let store = temp.store();
+    let mut request = spec("small-tail");
+    request["log_limit_policy"] = json!("head_tail");
+    let mut state = store.create(&request, |_|Ok(())).unwrap();
+    let dir = store.directory("small-tail").unwrap();
+    let bytes = [b"first line\n".as_slice(), &vec![b'x';600], b"\nfinal\n"].concat();
+    head_tail::capture(Cursor::new(bytes.clone()),std::fs::File::create(dir.join("stdout.log")).unwrap(),
+        dir.join("stdout.tail"),1024,Arc::new(AtomicBool::new(false)),Arc::new(AtomicBool::new(false)),Arc::new(AtomicBool::new(false)))
+        .unwrap().join().unwrap().unwrap();
+    state["state"] = json!("exited");
+    store::write_json(&dir.join("state.json"),&state).unwrap();
+    let last = store.call("read_process_output",&json!({"job_id":"small-tail","stream":"stdout","tail_lines":2,"encoding":"utf-8"})).unwrap();
+    assert_eq!(last["text"],std::str::from_utf8(&bytes[b"first line\n".len()..]).unwrap());
+    assert_eq!(last["logs_truncated"],false);
+    assert_eq!(last["eof"],true);
+}
+
+#[test]
+fn concurrent_clients_cannot_launch_the_same_job_twice() {
+    use std::sync::{Arc, Barrier, atomic::{AtomicUsize,Ordering}};
+    let temp = Temp::new();
+    let barrier = Arc::new(Barrier::new(3));
+    let launches = Arc::new(AtomicUsize::new(0));
+    let mut clients = Vec::new();
+    for _ in 0..2 {
+        let root = temp.0.clone();
+        let barrier = barrier.clone();
+        let launches = launches.clone();
+        clients.push(std::thread::spawn(move || {
+            let store = store::Store::new(root).unwrap();
+            barrier.wait();
+            store.create(&spec("same-job"), |_| { launches.fetch_add(1,Ordering::SeqCst); Ok(()) })
+        }));
+    }
+    barrier.wait();
+    let results:Vec<_> = clients.into_iter().map(|client|client.join().unwrap()).collect();
+    assert!(results.iter().any(Result::is_ok));
+    assert_eq!(launches.load(Ordering::SeqCst),1);
+    temp.store().create(&spec("same-job"), |_|panic!("lost receipt must not replay")).unwrap();
+}
+
+#[test]
+fn durable_download_resumes_and_requires_a_matching_client_receipt() {
+    use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+    use sha2::{Digest,Sha256};
+    let temp = Temp::new();
+    let store = temp.store();
+    let workspace = workspace::call(&store,"create_workspace",&json!({"workspace_id":"download","source_revision":"r"}),|_|panic!()).unwrap();
+    workspace::call(&store,"seal_workspace",&json!({"workspace_id":"download"}),|_|panic!()).unwrap();
+    workspace::call(&store,"run_workspace_process",&json!({"session":"s","workspace_id":"download","job_id":"artifact-job","executable":"test-command"}),|_|Ok(())).unwrap();
+    let job = store.directory("artifact-job").unwrap();
+    let mut state = store::read_json(&job.join("state.json")).unwrap();
+    state["state"] = json!("exited");
+    store::write_json(&job.join("state.json"),&state).unwrap();
+    workspace::release(&job).unwrap();
+    let data = vec![0x85u8;5*1024*1024+17];
+    let path = std::path::PathBuf::from(workspace["paths"]["artifacts"].as_str().unwrap()).join("large.bin");
+    std::fs::write(&path,&data).unwrap();
+    let begin = json!({"workspace_id":"download","transfer_id":"transfer","job_id":"artifact-job","path":"artifacts/large.bin"});
+    let retained = workspace::call(&store,"begin_workspace_download",&begin,|_|panic!()).unwrap();
+    assert_eq!(retained["sha256"],format!("{:x}",Sha256::digest(&data)));
+    let mut query = json!({"workspace_id":"download","transfer_id":"transfer","offset":0,"max_bytes":262144});
+    let first = workspace::call(&store,"read_workspace_download",&query,|_|panic!()).unwrap();
+    assert_eq!(workspace::call(&temp.store(),"read_workspace_download",&query,|_|panic!()).unwrap()["data_base64"],first["data_base64"]);
+    let status = workspace::call(&temp.store(),"get_workspace_download",&query,|_|panic!()).unwrap();
+    assert_eq!(status["completed"],false);
+    assert!(workspace::call(&store,"remove_workspace_download",&query,|_|panic!()).is_err());
+    let mut assembled = STANDARD.decode(first["data_base64"].as_str().unwrap()).unwrap();
+    query["offset"] = first["next_offset"].clone();
+    query["prefix_sha256"] = json!("0".repeat(64));
+    assert!(workspace::call(&store,"read_workspace_download",&query,|_|panic!()).is_err());
+    while assembled.len() < data.len() {
+        query["offset"] = json!(assembled.len());
+        if assembled.len() == 262144 { query["prefix_sha256"] = json!(format!("{:x}",Sha256::digest(&assembled))); }
+        else { query.as_object_mut().unwrap().remove("prefix_sha256"); }
+        let chunk = workspace::call(&temp.store(),"read_workspace_download",&query,|_|panic!()).unwrap();
+        let bytes = STANDARD.decode(chunk["data_base64"].as_str().unwrap()).unwrap();
+        assert!(!bytes.is_empty());
+        assert_eq!(chunk["chunk_sha256"],format!("{:x}",Sha256::digest(&bytes)));
+        assembled.extend(bytes);
+    }
+    assert_eq!(assembled,data);
+    let receipt = json!({"workspace_id":"download","transfer_id":"transfer","received_bytes":assembled.len(),"received_sha256":format!("{:x}",Sha256::digest(&assembled))});
+    assert_eq!(workspace::call(&store,"get_workspace_download",&query,|_|panic!()).unwrap()["completed"],false);
+    assert_eq!(workspace::call(&store,"finish_workspace_download",&receipt,|_|panic!()).unwrap()["completed"],true);
+    assert_eq!(workspace::call(&temp.store(),"finish_workspace_download",&receipt,|_|panic!()).unwrap()["completed"],true);
+    let mut conflict = begin.clone(); conflict["path"] = json!("artifacts/other.bin");
+    assert!(workspace::call(&store,"begin_workspace_download",&conflict,|_|panic!()).is_err());
+    assert_eq!(workspace::call(&store,"remove_workspace_download",&receipt,|_|panic!()).unwrap()["removed"],true);
+    assert_eq!(workspace::call(&temp.store(),"remove_workspace_download",&receipt,|_|panic!()).unwrap()["removed"],false);
+    assert!(path.exists());
 }
 
 #[test]
@@ -189,6 +332,46 @@ fn batch_removal_preserves_running_and_unknown_jobs() {
     assert!(!store.directory("done").unwrap().exists());
     assert!(store.directory("active").unwrap().exists());
     assert!(store.directory("stale").unwrap().exists());
+}
+
+#[test]
+fn upload_status_recovers_lost_chunk_and_final_receipts_without_rewriting() {
+    use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
+    use sha2::{Digest, Sha256};
+    let temp = Temp::new();
+    let store = temp.store();
+    workspace::call(&store, "create_workspace", &json!({"workspace_id":"receipt","source_revision":"r"}), |_| panic!()).unwrap();
+    let bytes = b"first chunk; last chunk";
+    let mut query = json!({"workspace_id":"receipt","path":"source/file","total_bytes":bytes.len(),"sha256":format!("{:x}", Sha256::digest(bytes))});
+    assert_eq!(workspace::call(&store, "get_workspace_upload", &query, |_| panic!()).unwrap()["state"], "not_started");
+    let mut nested = query.clone(); nested["path"] = json!("source/absent/parent/file");
+    assert_eq!(workspace::call(&store,"get_workspace_upload",&nested,|_|panic!()).unwrap()["state"],"not_started");
+    let root = super::workspace_location::resolve(&store.root.join(".workspaces").join("receipt")).unwrap();
+    assert!(!root.join("source/absent").exists());
+    let mut upload = query.clone();
+    upload["offset"] = json!(0);
+    upload["data_base64"] = json!(STANDARD.encode(&bytes[..5]));
+    upload["chunk_sha256"] = json!("0".repeat(64));
+    assert!(workspace::call(&store,"write_workspace_file",&upload,|_|panic!()).unwrap_err().contains("chunk SHA-256 mismatch"));
+    assert_eq!(workspace::call(&store,"get_workspace_upload",&query,|_|panic!()).unwrap()["state"],"not_started");
+    upload["chunk_sha256"] = json!(format!("{:x}",Sha256::digest(&bytes[..5])));
+    workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap();
+    let status = workspace::call(&store, "get_workspace_upload", &query, |_| panic!()).unwrap();
+    assert_eq!(status["next_offset"], 5);
+    assert_eq!(status["staged_sha256"], format!("{:x}", Sha256::digest(&bytes[..5])));
+    let mut conflict = query.clone();
+    conflict["sha256"] = json!("0".repeat(64));
+    assert!(workspace::call(&store, "get_workspace_upload", &conflict, |_| panic!()).unwrap_err().contains("identity conflicts"));
+    upload["offset"] = json!(5);
+    upload["data_base64"] = json!(STANDARD.encode(&bytes[5..]));
+    upload["chunk_sha256"] = json!(format!("{:x}",Sha256::digest(&bytes[5..])));
+    workspace::call(&store, "write_workspace_file", &upload, |_| panic!()).unwrap();
+    let recovered = workspace::call(&temp.store(), "get_workspace_upload", &query, |_| panic!()).unwrap();
+    assert_eq!(recovered["complete"], true);
+    assert_eq!(recovered["verified"], true);
+    assert_eq!(recovered["next_offset"], bytes.len());
+    query["sha256"] = json!("0".repeat(64));
+    assert_ne!(workspace::call(&store, "get_workspace_upload", &query, |_| panic!()).unwrap()["complete"], true);
 }
 
 #[test]

@@ -92,6 +92,7 @@ fn disk_path(root: &Path, requested: Option<&str>) -> Result<PathBuf, String> {
 pub(super) fn observe(identity: &Identity, args: &Value) -> Result<Value, String> {
     let (vars, user) = identity.environment()?;
     let root = identity.root()?;
+    let preflight = super::preflight::observe(&vars,args);
     let path = disk_path(&root, args["path"].as_str())?;
     let names: Vec<&str> = match args["executables"].as_array() {
         Some(names) => names
@@ -150,9 +151,52 @@ pub(super) fn observe(identity: &Identity, args: &Value) -> Result<Value, String
             )
         })
         .collect();
-    Ok(
-        json!({"os":std::env::consts::OS,"process_arch":std::env::consts::ARCH,"logical_cpus":std::thread::available_parallelism().map(|n| n.get()).ok(),"user":user,"environment":visible,"console":console,"job_storage_path":root,"disk":{"path":path,"space":space(&path)?},"executables":tools,"native_uia":cfg!(windows),"interactive_desktop_verified":false,"dependencies_modified":false,"package_checks_performed":false,"dependency_policy":rustdesk_agent_mcp::process::dependency_policy(),"note":"Executable discovery checks PATH files, not versions or package imports. Use explicit run_process probes and follow dependency_policy for any provisioning commands. No dependencies were installed."}),
-    )
+    let mut result =
+        json!({"os":std::env::consts::OS,"process_arch":std::env::consts::ARCH,"logical_cpus":std::thread::available_parallelism().map(|n| n.get()).ok(),"user":user,"environment":visible,"console":console,"job_storage_path":root,"disk":{"path":path,"space":space(&path)?},"executables":tools,"native_uia":cfg!(windows),"interactive_desktop_verified":false,"dependencies_modified":false,"package_checks_performed":false,"dependency_policy":rustdesk_agent_mcp::process::dependency_policy(),"note":"Executable discovery checks PATH files, not versions or package imports. Use explicit run_process probes and follow dependency_policy for any provisioning commands. No dependencies were installed."});
+    result["preflight"] = preflight;
+    Ok(result)
+}
+
+pub(super) fn probe(identity: &Identity, store: &super::store::Store, args: &Value) -> Result<Value,String> {
+    let id = args["probe_id"].as_str().ok_or("Missing probe_id")?;
+    if id.is_empty() || id.len() > 40 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) {
+        return Err("Invalid probe_id".into());
+    }
+    let (vars, user) = identity.environment()?;
+    let home = vars.get(if cfg!(windows) {"USERPROFILE"} else {"HOME"}).map(PathBuf::from)
+        .filter(|p|p.is_absolute() && p.is_dir()).ok_or("Authorized user home unavailable for version probes")?;
+    let names = args["executables"].as_array().ok_or("Missing probe executables")?;
+    let mut results = Vec::new();
+    for (index,name) in names.iter().enumerate() {
+        let name = name.as_str().ok_or("Invalid probe executable")?;
+        let argument = match name {
+            "git"|"python"|"python3"|"rustc"|"cargo"|"cmake"|"ninja"|"node"|"dotnet"|"clang"|"gcc" => "--version",
+            "go" => "version",
+            "java" => "-version",
+            _ => {
+                results.push(json!({"name":name,"probe_started":false,"reason":"requires_explicit_project_probe"}));
+                continue;
+            }
+        };
+        let path = match resolve(name,&vars) {
+            Some(path) if !path.components().any(|c|c.as_os_str().to_string_lossy().eq_ignore_ascii_case("WindowsApps")) => path,
+            _ => {
+                results.push(json!({"name":name,"probe_started":false,"reason":"executable_not_found_or_store_alias"}));
+                continue;
+            }
+        };
+        let job = format!("{id}-version-{index}");
+        let request = json!({"session":args["session"],"job_id":job,"executable":path,"args":[argument],"cwd":home,
+            "timeout_ms":5000,"max_log_bytes":16384,"log_limit_policy":"truncate",
+            "env":[{"name":"RUSTUP_AUTO_INSTALL","value":"0"},{"name":"DOTNET_SKIP_FIRST_TIME_EXPERIENCE","value":"1"},
+                {"name":"DOTNET_CLI_TELEMETRY_OPTOUT","value":"1"},{"name":"PYTHONDONTWRITEBYTECODE","value":"1"},
+                {"name":"GIT_TERMINAL_PROMPT","value":"0"}]});
+        rustdesk_agent_mcp::process::validate("run_process",&request)?;
+        let state = store.create(&request,|dir| identity.launch(dir))?;
+        results.push(json!({"name":name,"job_id":job,"job":state,"version_verified":false,
+            "verification":"Inspect terminal exit_code and stdout/stderr; submission is not probe success"}));
+    }
+    Ok(json!({"probe_id":id,"identity":user,"probes":results,"software_installation_requested":false}))
 }
 
 #[cfg(test)]

@@ -25,6 +25,7 @@ pub fn tools() -> Vec<Value> {
         ("run_process", "Start a durable command on an authenticated terminal session. Both peers need an mcp build. shell defaults to none: executable/args are passed directly using OS argv conventions. Select shell cmd/powershell explicitly for Windows script syntax. Default timeout is one hour; maximum 24 hours. Supply a unique job_id and reuse it after uncertain replies; conflicting reuse fails. Returns starting/running, not command success. Logs and environment overrides are stored on the remote machine. Jobs survive connection closure. When the main command exits, all descendants are cleaned up, including Start-Process children; run the long-lived command directly.", false,
             json!({"job_id":id,"executable":{"type":"string","minLength":1,"maxLength":32768},"args":{"type":"array","maxItems":256,"items":{"type":"string","maxLength":32768}},"cwd":{"type":"string","minLength":1,"maxLength":32768},"env":{"type":"array","maxItems":128,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1,"maxLength":256},"value":{"type":"string","maxLength":32768}},"required":["name","value"],"additionalProperties":false}},"timeout_ms":{"type":"integer","minimum":100,"maximum":86400000},"max_log_bytes":{"type":"integer","minimum":1024,"maximum":268435456}}), vec!["job_id","executable","cwd"]),
         ("get_process_status", "Read durable command state, exit code, timestamps, log sizes, execution identity, failure_stage, API/OS failure details and termination_requested/reason. Startup failures have no command exit code; Windows exit_code_hex preserves the unsigned bit pattern. Use read_process_output tail_lines or recover_processes for recent logs. A stale worker reports unknown, never success; no PID-based automatic rerun or kill.", true, json!({"job_id":id}), vec!["job_id"]),
+        ("reconcile_process", "Reconcile one unknown Windows job using the recorded worker/command creation identities and named job objects. Requires proof the worker and contained trees ended; stale time, PID absence alone, legacy/missing evidence or access denied never release capacity. Preserves original state and logs, records failed/failure_stage:worker_lost with execution_outcome:unknown and success:null when the exit result is lost. Never kills or replays a command. Query the same ID after an uncertain reply.", false, json!({"job_id":id}), vec!["job_id"]),
         ("wait_for_process", "Wait up to 60 seconds for job completion, state/phase change or new log bytes. Returns the durable job and bounded incremental stdout/stderr/setup pages; reuse each next_offset. A wait timeout does not terminate the job. Completed jobs can still have unread log pages (check eof). Survives session replacement when queried with the same job_id.", true, json!({"job_id":id,"timeout_ms":{"type":"integer","minimum":0,"maximum":60000},"stdout_offset":{"type":"integer","minimum":0,"maximum":9007199254740991i64},"stderr_offset":{"type":"integer","minimum":0,"maximum":9007199254740991i64},"setup_offset":{"type":"integer","minimum":0,"maximum":9007199254740991i64},"after_state":{"type":"string","maxLength":64},"after_phase":{"type":"string","maxLength":64},"max_bytes":{"type":"integer","minimum":1,"maximum":32768},"encoding":{"type":"string","enum":["auto","utf-8","oem","cp936","base64"]}}), vec!["job_id"]),
         ("extend_process_timeout", "Extend a starting/running durable job's total timeout from its start (maximum 24 hours). Does not rerun or resume a terminated job. Query timeout_ms until the worker applies the request; an uncertain/late reply is not proof of extension. Default jobs already allow one hour. Expiry terminates the process tree; partial artifacts do not imply command success.", false, json!({"job_id":id,"timeout_ms":{"type":"integer","minimum":100,"maximum":86400000}}), vec!["job_id","timeout_ms"]),
         ("list_processes", "List this remote OS user's retained command jobs after reconnect. Does not return command arguments or environment secrets.", true, json!({}), vec![]),
@@ -35,11 +36,13 @@ pub fn tools() -> Vec<Value> {
         ("remove_processes", "Remove an explicit batch of completed jobs and their retained logs. Returns a result per job; active/unknown/missing jobs are preserved and reported individually. Use list_processes to select job IDs before deletion.", false, json!({"job_ids":{"type":"array","minItems":1,"maxItems":64,"items":id}}), vec!["job_ids"]),
         ("read_remote_file", "Read a bounded regular file on the authenticated terminal peer under its OS identity. No shell execution or retained job. Absolute path, byte offset or tail_lines; max 64 KiB. File can change between reads. Filter/redact sensitive logs on the remote machine before retrieving them.", true, json!({"path":{"type":"string","minLength":1,"maxLength":32768},"offset":{"type":"integer","minimum":0,"maximum":9007199254740991i64},"max_bytes":{"type":"integer","minimum":1,"maximum":65536}}), vec!["path"]),
         ("get_environment", "Inspect the authenticated terminal user's remote OS/architecture, CPU count, selected environment variables, disk space and executable paths. Does not execute version/import checks or install dependencies. Windows uses the authenticated terminal identity: its logon-token environment when available, otherwise the authorized terminal process environment. Standard Windows system tool directories are appended to PATH before explicit command overrides. Windows user.privileges.elevated reports the authorized token elevation, or null with an error if unobservable. No automatic elevation. GUI environment variables do not prove a usable interactive desktop.", true, json!({"path":{"type":"string","minLength":1,"maxLength":32768},"executables":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":64}}}), vec![]),
+        ("probe_environment", "Start up to four explicit, durable version probes under the SAME authorized terminal OS identity. Fixed version argv only; no imports, installation, source builds or arbitrary command arguments. Each probe has a stable job_id derived from probe_id, a 5-second process-tree timeout and bounded retained logs. Query those jobs for actual exit codes and output; a discovered path alone is not a usable toolchain. Reuse probe_id after an uncertain reply. Unsupported/bootstrap-prone wrappers require an explicit project-specific run_process probe.", false, json!({"probe_id":{"type":"string","minLength":1,"maxLength":40},"executables":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"string","minLength":1,"maxLength":32}}}), vec!["probe_id","executables"]),
     ] {
         let mut properties = properties.as_object().cloned().unwrap_or_default();
         if name == "run_process" {
+            properties.insert("producer_encoding_hint".into(),json!({"type":"string","enum":["unknown","utf-8","oem","cp936","base64"],"description":"Caller-declared producer encoding recorded for diagnosis. Does not change producer bytes or force the read-side decoder; it is not automatic encoding detection."}));
             properties.insert("retain_logs".into(), json!({"type":"boolean","default":true,"description":"False drains stdout/stderr/setup without storing their content. State and request metadata (including args/env) remain for idempotency; remove completed jobs to delete those too. Existing output byte limits and termination policy still apply."}));
-            properties.insert("log_limit_policy".into(), json!({"type":"string","enum":["truncate","terminate"],"default":"truncate","description":"At max_log_bytes per stream, default truncate keeps the captured prefix and drains/discards further output while the command continues. Status reports logs_truncated independently of exit_code/success. Explicit terminate kills the process tree and reports log_limit only if the limit triggered termination. Does not change environment_script's separate safety limit."}));
+            properties.insert("log_limit_policy".into(), json!({"type":"string","enum":["truncate","terminate","head_tail"],"default":"truncate","description":"At max_log_bytes per stream, default truncate keeps the captured prefix and drains/discards further output while the command continues. Status reports logs_truncated independently of exit_code/success. Select head_tail to keep a bounded prefix and rotating tail with original byte offsets, explicit gap/ranges and eof. Explicit terminate kills the process tree and reports log_limit only if the limit triggered termination. Does not change environment_script's separate safety limit."}));
             properties.insert("environment_script".into(), json!({"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"args":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":4096}},"timeout_ms":{"type":"integer","minimum":100,"maximum":120000}},"required":["path"],"additionalProperties":false,"description":"Windows only: run an absolute .bat/.cmd setup script (e.g. vcvars64.bat), capture its Unicode environment in memory, then launch executable/args normally. Setup inherits the authorized user environment; env/unset_env apply after capture. Setup has a separate timeout (default 120 seconds) and the main command keeps timeout_ms. Setup failure/cancellation never launches the command. Quotes, %, !, ^ and control characters in setup path/args are rejected rather than reinterpreted by CALL. Read setup output with stream:setup."}));
             properties.insert("unset_env".into(), json!({"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"maxLength":256},"description":"Remove inherited variables. env values may be empty strings; empty and absent are different."}));
             properties.insert("shell".into(), json!({"type":"string","enum":["none","cmd","powershell"],"description":"Default none preserves direct argv. Windows cmd/powershell require executable to name that shell and exactly one args entry containing the script, without /c or -Command wrappers. Script syntax is interpreted by the selected shell. PowerShell uses NoProfile/NonInteractive and defaults ProgressPreference to SilentlyContinue; scripts may override it."}));
@@ -59,6 +62,12 @@ pub fn tools() -> Vec<Value> {
             properties.insert("encoding".into(), json!({"type":"string","enum":["auto","utf-8","oem","cp936","base64"]}));
             properties.insert("tail_lines".into(), json!({"type":"integer","minimum":1,"maximum":1000}));
         }
+        if name == "get_environment" {
+            properties.insert("required_paths".into(),json!({"type":"array","maxItems":32,"items":{"type":"object","properties":{
+                "id":{"type":"string","minLength":1,"maxLength":64},"path":{"type":"string","minLength":1,"maxLength":32768},
+                "kind":{"type":"string","enum":["file","directory"]}},"required":["id","path","kind"],"additionalProperties":false},
+                "description":"Report existence/type by id only; never read contents of deployment configurations."}));
+        }
         properties.insert("session".into(), json!({"type":"string","minLength":1,"maxLength":36}));
         let mut required = required;
         required.push("session");
@@ -73,6 +82,7 @@ pub fn is_tool(name: &str) -> bool {
         || matches!(
             name,
             "run_process"
+                | "reconcile_process"
                 | "get_process_status"
                 | "wait_for_process"
                 | "extend_process_timeout"
@@ -82,11 +92,17 @@ pub fn is_tool(name: &str) -> bool {
                 | "remove_process"
                 | "remove_processes"
                 | "get_environment"
+                | "probe_environment"
                 | "read_remote_file"
         )
 }
 
 pub fn validate(operation: &str, arguments: &Value) -> Result<(), String> {
+    if operation == "get_process_capabilities" {
+        return crate::catalog::validate(&json!({"type":"object","properties":{
+            "session":{"type":"string","minLength":1,"maxLength":36}},
+            "required":["session"],"additionalProperties":false}), arguments, "arguments");
+    }
     let tool = tools()
         .into_iter()
         .chain(crate::workspace::tools())
