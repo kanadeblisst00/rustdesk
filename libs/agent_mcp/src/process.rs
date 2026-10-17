@@ -59,6 +59,7 @@ pub fn tools() -> Vec<Value> {
             properties.insert("tail_lines".into(), json!({"type":"integer","minimum":1,"maximum":1000,"description":"Read the last N LF-delimited lines within max_bytes (default 64 KiB). Mutually exclusive with offset. truncated_start means the byte limit cut the requested tail; continue using byte offsets for full logs."}));
         }
         if name == "read_remote_file" {
+            properties.insert("missing_ok".into(), json!({"type":"boolean","default":false,"description":"Only for optional files: NotFound returns exists:false without content. Default missing files remain errors with path, operation stage and OS error kind. Permission, type and other errors are never suppressed."}));
             properties.insert("encoding".into(), json!({"type":"string","enum":["auto","utf-8","oem","cp936","base64"]}));
             properties.insert("tail_lines".into(), json!({"type":"integer","minimum":1,"maximum":1000}));
         }

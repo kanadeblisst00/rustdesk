@@ -316,3 +316,12 @@ Windows 交互桌面上设置 `$env:RUSTDESK_TEST_UIA='1'` 后运行 `python -m 
 工具错误保留原 `content`，并为已知会话故障添加 `structuredContent.error.kind`：`session_disconnected`、`session_auth_required`、`service_unavailable`、`remote_request_timeout`。stdio 转发错误使用 JSON-RPC `error.data.kind`：401 是 `need_reauth`，连接/读取失败是 `controller_unreachable`，413 是 `payload_too_large`，429 是 `service_busy`。HTTP/MCP 无法观察宿主插件是否整体掉线，不能凭 `fetch failed` 断言是远端会话或令牌失效；插件完全断开时，本程序也无法返回诊断。
 
 这些错误不重放请求，不声称远端 job 已停止；重连同一设备、同一 OS 身份后用新 session 查询原 `job_id` 或 `list_processes`。控制端服务重启或重新鉴权不等于命令失败。请求体上限为 1 MiB；外层宿主在请求到达 MCP 前报告 `Missing required fields: namespace, toolName`，不属于此 RustDesk 工具 schema，不能通过本程序修复该截断。源码/二进制传输优先使用有界文件分片，不塞入 `run_process.args`。
+
+
+### Optional file observations and bounded recovery
+
+`read_remote_file` defaults to a required read. An I/O failure includes the operation stage (`metadata`, `open`, `seek`, `read`), requested path and OS error kind. A missing file is still an error by default.
+
+After the peer schema advertises `missing_ok`, callers may set it to `true` for optional files such as a progress snapshot that may not exist before the first event. Only `NotFound` becomes `{exists:false, missing:true, path:...}` with no content; an empty existing file returns `exists:true` and `size_bytes:0`. Permission failures, directories, relative paths and other failures remain errors. Do not use optional reads to accept missing build outputs or lost job evidence. Older peers retain the existing required-read contract.
+
+Within an already authorized task, agents diagnose routine failures and retry safe observations without asking for the same permission again. An uncertain command uses its original job ID for recovery; it is never replayed merely because a reply timed out. New software, broader permissions, unauthorized source changes, unknown credentials and irreversible actions still require a concrete user decision. This guidance does not grant new command or system privileges.
