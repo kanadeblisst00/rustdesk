@@ -1,6 +1,6 @@
 # 2026-09-16 远程编译建议核对
 
-本轮从 `[历史提交编号已移除]` 的 master 开始，工作区干净。先检索 troubleshooting 中 0x80070005、267009、SCons、vcvarsall 的记录，再核对当前进程、Shell、日志、工作区和身份实现。历史记录中有针对另一项目 SCons 4.10.1 的已验证临时补丁，也有“远程执行边界不兼容”的归因；没有对应完整 argv、失败 API 和被控端版本时，后一归因仍是线索，不能证明 RustDesk 进程包装的具体根因。
+本轮从 `master` 开始，工作区干净。先检索 troubleshooting 中 0x80070005、267009、SCons、vcvarsall 的记录，再核对当前进程、Shell、日志、工作区和身份实现。历史记录中有针对另一项目 SCons 4.10.1 的已验证临时补丁，也有“远程执行边界不兼容”的归因；没有对应完整 argv、失败 API 和被控端版本时，后一归因仍是线索，不能证明 RustDesk 进程包装的具体根因。
 
 | 建议 | 核对结论与处理 |
 | --- | --- |
@@ -36,4 +36,4 @@
 - 独立协议库 `cargo +1.75.0 test --locked --manifest-path libs/agent_mcp/Cargo.toml`：37 项通过；同库 Clippy `--all-targets -- -D warnings` 通过。
 - `python3 -m unittest discover -s tools/mcp -p 'test_*.py' -v`：使用上述真实 worker 入口，83 项中 71 项通过、12 项因平台或环境条件跳过；其中矩阵运行器 20 项通过。
 - 生产 Windows process 模块及其测试通过 `x86_64-pc-windows-gnu` 交叉检查；这是类型/编译检查，未在 Windows 执行。进程专项 Clippy 仅有未修改代码的既有警告，新增模块格式检查和 `git diff --check` 通过。
-- 上一轮 Windows 错误码断言修复的 [Actions #22](https://github.com/kanadeblisst00/rustdesk/actions/runs/34681034929) 已成功，提交为 `[历史提交编号已移除]`。该构建不包含本轮改动；本轮尚未执行完整 RustDesk 安装包构建或远端 Nuitka/SCons 复现，因此不把交叉检查当作 Windows 实机验证，也不把原始 `0x80070005` 标记为已解决。
+- 上一轮 Windows 错误码断言修复的 Actions 构建已成功。该构建不包含本轮改动；本轮尚未执行完整 RustDesk 安装包构建或远端 Nuitka/SCons 复现，因此不把交叉检查当作 Windows 实机验证，也不把原始 `0x80070005` 标记为已解决。
