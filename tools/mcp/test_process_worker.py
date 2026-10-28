@@ -69,7 +69,8 @@ class ProcessWorkerTest(unittest.TestCase):
     def run_worker(self, code, *, timeout=30000, arguments=(), cancel=False, descendant=False, request_overrides=None, close_transport=False, block_state=False):
         with tempfile.TemporaryDirectory(prefix="mcp-worker-") as directory:
             root = Path(directory)
-            job = root / "job"
+            # Production Store paths are <store>/<job_id>; recovery binds both.
+            job = root / "entry-test"
             job.mkdir(mode=0o700)
             request = {"job_id": "entry-test", "executable": sys.executable,
                        "args": ["-c", code, *arguments], "cwd": str(root), "timeout_ms": timeout}
@@ -80,8 +81,10 @@ class ProcessWorkerTest(unittest.TestCase):
                 "job_id": "entry-test", "state": "starting", "exit_code": None,
                 "updated_at_ms": int(time.time() * 1000)}), encoding="utf-8")
             stdio = subprocess.PIPE if close_transport else subprocess.DEVNULL
+            worker_errors = (root / "worker-entry.stderr").open("wb")
             process = subprocess.Popen([EXECUTABLE, "--mcp-process-worker", str(job)],
-                                       stdin=stdio, stdout=stdio, stderr=stdio)
+                                       stdin=stdio, stdout=stdio,
+                                       stderr=stdio if close_transport else worker_errors)
             state_reader = None
             try:
                 deadline = time.monotonic() + 30
@@ -109,7 +112,9 @@ class ProcessWorkerTest(unittest.TestCase):
                 else:
                     self.fail("Built executable did not complete its worker entry point")
                 process.wait(timeout=5)
-                self.assertEqual(process.returncode, 0, "Worker exited unsuccessfully")
+                worker_errors.close()
+                diagnostic = (root / "worker-entry.stderr").read_bytes()[-8192:].decode("utf-8", errors="replace")
+                self.assertEqual(process.returncode, 0, "Worker exited unsuccessfully: " + diagnostic)
                 if close_transport:
                     self.assertTrue(transport_closed, "Worker did not reach the disconnection barrier")
                 # Python's Windows file handles conflict with the worker's state replacement.
@@ -125,6 +130,7 @@ class ProcessWorkerTest(unittest.TestCase):
                     self.assertFalse((root / "leaked").exists(), "Grandchild survived task cleanup")
                 return result
             finally:
+                worker_errors.close()
                 if state_reader is not None:
                     state_reader.close()
                 if close_transport:
@@ -382,7 +388,7 @@ class ProcessWorkerTest(unittest.TestCase):
     def test_worker_termination_cleans_up_process_tree(self):
         with tempfile.TemporaryDirectory(prefix="mcp-worker-exit-") as directory:
             root = Path(directory)
-            job = root / "job"
+            job = root / "exit-test"
             job.mkdir(mode=0o700)
             child = ("import time,pathlib; pathlib.Path('started').write_text('ready'); "
                      "time.sleep(2); pathlib.Path('leaked').write_text('bad')")

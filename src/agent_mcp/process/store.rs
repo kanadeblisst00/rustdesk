@@ -160,7 +160,7 @@ impl Store {
             }
             result
         } else {
-            read_json(&dir.join("state.json"))?
+            super::recovery_record::read_state(&dir)?
         };
         state["last_known_state"] = state["state"].clone();
         state["archived"] = json!(archived);
@@ -216,7 +216,7 @@ impl Store {
         let mut jobs = Vec::new();
         for entry in fs::read_dir(&self.root).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            if entry.file_name() == ".workspaces" {
+            if entry.file_name() == ".workspaces" || entry.file_name() == ".recovery" {
                 continue;
             }
             if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
@@ -229,6 +229,10 @@ impl Store {
             if jobs.len() > 256 {
                 return Err("Job store exceeds 256 records; remove completed records".into());
             }
+        }
+        for id in super::recovery_record::missing_jobs(&self.root)? {
+            jobs.push(self.status(&id)?);
+            if jobs.len() > 256 { return Err("Job store exceeds 256 records; preserve unknown jobs".into()); }
         }
         jobs.sort_by_key(|j| j["job_id"].as_str().unwrap_or("").to_owned());
         Ok(json!({"capacity":super::retention::capacity(&jobs),"jobs":jobs,"storage_path":self.root}))
@@ -252,6 +256,9 @@ impl Store {
                 );
             }
             return self.status(id);
+        }
+        if super::recovery_record::exists(&dir)? {
+            return Err("Original job directory is missing; query/reconcile the SAME job ID, never replay it".into());
         }
         let existing = self.list()?;
         let prior = existing["jobs"].as_array().ok_or("Invalid job store")?;
@@ -280,6 +287,8 @@ impl Store {
         state["logs_retained"] = json!(arguments["retain_logs"].as_bool().unwrap_or(true));
         state["producer_encoding_hint"] = json!(arguments["producer_encoding_hint"].as_str().unwrap_or("unknown"));
         write_json(&dir.join("state.json"), &state)?;
+        #[cfg(windows)]
+        super::recovery_record::checkpoint(&dir, &state)?;
         if let Err(error) = launch(&dir) {
             let error = error.record(&mut state);
             state["failure_stage"] = json!("worker_launch");

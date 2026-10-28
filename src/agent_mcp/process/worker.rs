@@ -96,9 +96,13 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
         "build_commit":runtime["build_commit"],"executable_sha256":runtime["executable_sha256"],
         "executable_hash_scope":runtime["executable_hash_scope"]});
     if let Err(error) = super::reconcile::worker_identity(&mut state) {
-        super::diagnostics::Failure::message("read_worker_identity", error)
+        super::diagnostics::Failure::message("read_worker_identity", error.clone())
             .warn(&mut state, "recovery_identity");
+        #[cfg(windows)]
+        return Err(error);
     }
+    #[cfg(windows)]
+    super::recovery_record::checkpoint(dir, &state)?;
     state["phase"] = json!("prepare");
     state["termination_requested"] = json!(false);
     match platform::Identity::new(None).and_then(|identity| identity.environment()) {
@@ -129,6 +133,8 @@ pub(super) fn run(dir: &Path) -> Result<(), String> {
         // A reader can deny replacement of state.json on Windows even after the command exits.
         store::write_json_detailed(&dir.join("result.json"), &state).map_err(|e| e.to_string())?;
     }
+    #[cfg(windows)]
+    super::recovery_record::checkpoint(dir, &state)?;
     super::workspace::release(dir)
 }
 

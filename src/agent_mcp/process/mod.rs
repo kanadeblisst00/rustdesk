@@ -2,6 +2,7 @@ mod diagnostics;
 mod worker_record;
 mod capabilities;
 mod reconcile;
+mod recovery_record;
 mod artifact;
 mod environment;
 mod output;

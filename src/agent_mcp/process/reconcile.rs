@@ -25,18 +25,26 @@ pub(super) fn spawn(command: &mut std::process::Command, dir: &Path, state: &mut
         let name = format!("Global\\RustDeskMCP-{}", uuid::Uuid::new_v4());
         state["recovery_launch_pending"] = json!(true);
         store::write_json_detailed(&dir.join("state.json"), state)?;
-        let child = super::platform::Child::spawn_named(command, &name)?;
+        super::recovery_record::checkpoint(dir, state)
+            .map_err(|e| super::diagnostics::Failure::message("persist_recovery_pending", e))?;
+        let mut child = super::platform::Child::spawn_named(command, &name)?;
         state[format!("{role}_job_object")] = json!(name);
         match windows::identity(child.process.id()) {
             Ok(identity) => {
                 state[format!("{role}_identity")] = identity;
                 state["recovery_launch_pending"] = json!(false);
             }
-            Err(error) => super::diagnostics::Failure::message("read_command_identity", error)
-                .warn(state, "recovery_identity"),
+            Err(error) => {
+                child.stop().map_err(|e| super::diagnostics::Failure::message("stop_unidentified_process_tree", e))?;
+                return Err(super::diagnostics::Failure::message("read_command_identity", error));
+            }
         }
         if let Err(error) = store::write_json_detailed(&dir.join("state.json"), state) {
             error.warn(state, "recovery_write");
+        }
+        if let Err(error) = super::recovery_record::checkpoint(dir, state) {
+            child.stop().map_err(|e| super::diagnostics::Failure::message("stop_unrecorded_process_tree", e))?;
+            return Err(super::diagnostics::Failure::message("persist_recovery_identity", error));
         }
         Ok(child)
     }
@@ -45,7 +53,7 @@ pub(super) fn spawn(command: &mut std::process::Command, dir: &Path, state: &mut
 pub(super) fn call(store: &Store, args: &Value) -> Result<Value, String> {
     let id = args["job_id"].as_str().ok_or("Missing job_id")?;
     let dir = store.directory(id)?;
-    let lock = dir.join("reconcile.lock");
+    let lock = super::recovery_record::lock_path(&dir)?;
     let owner = uuid::Uuid::new_v4().to_string();
     let mut file = OpenOptions::new().write(true).create_new(true).open(&lock)
         .map_err(|e| format!("Reconciliation lock unavailable; preserve for review: {e}"))?;
@@ -73,12 +81,12 @@ fn reconcile(store: &Store, id: &str, inspect: impl Fn(&Value) -> Result<Value, 
         return Ok(json!({"job":state,"reconciled":false,"reason":"Job is terminal or its worker heartbeat is current"}));
     }
     let dir = store.directory(id)?;
-    let before = store::read_json(&dir.join("state.json"))?;
+    let before = super::recovery_record::read_state(&dir)?;
     let evidence = inspect(&before)?;
     if evidence["confirmed_ended"] != true {
         return Ok(json!({"job":state,"reconciled":false,"evidence":evidence}));
     }
-    if store::read_json(&dir.join("state.json"))? != before || dir.join("result.json").exists() {
+    if super::recovery_record::read_state(&dir)? != before || dir.join("result.json").exists() {
         return Err("Job changed during reconciliation; query the SAME job_id again".into());
     }
     let mut result = before.clone();
@@ -92,10 +100,10 @@ fn reconcile(store: &Store, id: &str, inspect: impl Fn(&Value) -> Result<Value, 
     result["reconciliation"] = json!({"state":"interrupted","evidence":evidence,"previous_state":before["state"],
         "original_record":"state.json","request_replayed":false,"processes_terminated":false});
     // Keep the original anomalous state and logs. A missing exit code remains missing.
-    store::write_json(&dir.join("result.json"), &result)?;
+    super::recovery_record::write_result(&dir, &result)?;
     if let Err(error) = super::workspace::release(&dir) {
         result["workspace_release_error"] = json!(error);
-        store::write_json(&dir.join("result.json"), &result)?;
+        super::recovery_record::write_result(&dir, &result)?;
     }
     Ok(json!({"job":store.status(id)?,"reconciled":true,"active_slot_released":true}))
 }

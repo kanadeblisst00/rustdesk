@@ -27,6 +27,8 @@ mod worker_record;
 mod capabilities;
 #[path = "../../../src/agent_mcp/process/reconcile.rs"]
 mod reconcile;
+#[path = "../../../src/agent_mcp/process/recovery_record.rs"]
+mod recovery_record;
 #[path = "../../../src/agent_mcp/process/retention.rs"]
 mod retention;
 #[path = "../../../src/agent_mcp/process/store.rs"]

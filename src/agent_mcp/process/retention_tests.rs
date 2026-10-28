@@ -119,12 +119,14 @@ fn archival_preserves_bytes_unknown_jobs_and_archived_request_idempotency() {
 fn recent_completed_jobs_are_not_archived_and_capacity_error_is_precise() {
     let temp = Temp::new();
     let store = temp.store();
+    // Synthetic running jobs have no worker to refresh their heartbeat while
+    // this large fixture is written/read on slow filesystems.
     for i in 0..256 {
         add(
             &store,
             &format!("job-{i:03}"),
             if i < 6 { "running" } else { "exited" },
-            store::now(),
+            if i < 6 { u64::MAX } else { store::now() },
         );
     }
     let error = store
@@ -134,7 +136,8 @@ fn recent_completed_jobs_are_not_archived_and_capacity_error_is_precise() {
         .unwrap_err();
     assert!(error.contains("\"retained\":256"));
     assert!(error.contains("\"completed\":250"));
-    assert!(error.contains("\"active\":6"));
+    assert!(error.contains("\"active\":6"), "{error}");
+    assert!(error.contains("\"unknown\":0"), "{error}");
     assert!(error.contains("\"blocked_by\":\"retained\""));
     assert_eq!(store.list().unwrap()["jobs"].as_array().unwrap().len(), 256);
 }
