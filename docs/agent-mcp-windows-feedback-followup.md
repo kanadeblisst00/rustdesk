@@ -16,7 +16,7 @@
 | 环境不可见 | `get_environment` 已返回 OS、架构、授权身份、PATH/PATHEXT/COMSPEC、Windows OEM/ANSI 代码页、磁盘和 Python/CMake/Conda/cl/link 等路径探测。不会自动运行任意版本/导入命令；版本与 VS 初始化后环境通过明确进程探针核实。PATH 未发现不等于软件未安装。 |
 | 工作区复用不直观 | `get_workspace` 已返回路径、封存来源和租约；相同 ID/来源标签可复用，来源不同或忙碌时拒绝。全量工作区列表及 UI 化复用建议属于新能力，本轮未加入。来源标签不等于已核实的 Git 提交。 |
 | 缺少产物清单和批量下载 | 已有 `get_artifact_manifest`，提供明确文件路径、大小、SHA-256 和最新任务来源；矩阵可下载并复核。glob、直接收集 source/dist 和一次批量下载接口仍属未实现扩展，不能把已有清单描述为完全缺失。 |
-| 之前的 source manifest 假失败 | 已由 `[历史提交编号已移除]` 修复：显式排除生成目录，并分开报告命令结果与 `source_verification`。本轮保留严格复核，不把“无法复核”当作“源码未改变”。 |
+| 之前的 source manifest 假失败 | 已由既有改动修复：显式排除生成目录，并分开报告命令结果与 `source_verification`。本轮保留严格复核，不把“无法复核”当作“源码未改变”。 |
 
 ## 不属于本仓库的构建问题
 
@@ -58,8 +58,8 @@ Shell 语法参考 [Microsoft cmd](https://learn.microsoft.com/en-us/windows-ser
 
 ## 本地提交
 
-- `[历史提交编号已移除]`：`fix(mcp): 日志超限默认截断并保留真实进程结果`
-- `[历史提交编号已移除]`：`fix(mcp): 结构化显示 PowerShell 日志并保留原始字节`
-- `[历史提交编号已移除]`：`feat(mcp): 支持校验旧文件后备份并原子替换工作区文件`
+- `fix(mcp): 日志超限默认截断并保留真实进程结果`
+- `fix(mcp): 结构化显示 PowerShell 日志并保留原始字节`
+- `feat(mcp): 支持校验旧文件后备份并原子替换工作区文件`
 
 均在任务开始时的 `master` 本地提交，未推送。接口用法见 [构建任务文档](agent-mcp-build-jobs.md)。

@@ -94,7 +94,7 @@ $env:RUSTDESK_TEST_UIA = "1"
 python -m unittest discover -s tools/mcp -p test_uia_windows.py -v
 ```
 
-此前窗口优化提交 `[历史提交编号已移除]` 的 macOS 验证结果（2026-09-08，移除前的工具数和测试数）：
+此前窗口优化的 macOS 验证结果（2026-09-08，移除前的工具数和测试数）：
 
 | 检查 | 结果 |
 | --- | --- |
