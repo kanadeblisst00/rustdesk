@@ -1,7 +1,7 @@
 {
-  "id_servers": ["removed-server.invalid:21116"],
-  "relay_server": "removed-server.invalid:21117",
-  "public_key": "[REMOVED_OLD_SERVER_PUBLIC_KEY]",
+  "id_servers": ["rustdesk.pygrower.cn:21116"],
+  "relay_server": "rustdesk.pygrower.cn:21117",
+  "public_key": "6YnpcT6BMeMsqgLL79JbYHl5I13gbGx+2VW7HtdFg74=",
   "always_relay": false,
   "default_stun_servers": []
 }
