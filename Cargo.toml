@@ -128,6 +128,7 @@ winapi = { version = "0.3", features = [
 ] }
 windows = { version = "0.61", features = [
     "Win32",
+    "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Security",

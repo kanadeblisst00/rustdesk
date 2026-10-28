@@ -31,6 +31,8 @@ pub(super) const PRIVACY_MODE_IMPL: &str = super::PRIVACY_MODE_IMPL_WIN_VIRTUAL_
 
 const CONFIG_KEY_REG_RECOVERY: &str = "reg_recovery";
 
+mod snapshot;
+
 struct Display {
     dm: DEVMODEW,
     name: [WCHAR; 32],
@@ -43,6 +45,7 @@ pub struct PrivacyModeImpl {
     displays: Vec<Display>,
     virtual_displays: Vec<Display>,
     virtual_displays_added: Vec<u32>,
+    original_displays: Option<snapshot::DisplaySnapshot>,
 }
 
 struct TurnOnGuard<'a> {
@@ -67,9 +70,9 @@ impl<'a> DerefMut for TurnOnGuard<'a> {
 impl<'a> Drop for TurnOnGuard<'a> {
     fn drop(&mut self) {
         if !self.succeeded {
-            self.privacy_mode
-                .turn_off_privacy(INVALID_PRIVACY_MODE_CONN_ID, None)
-                .ok();
+            if let Err(error) = self.privacy_mode.turn_off_privacy(INVALID_PRIVACY_MODE_CONN_ID, None) {
+                log::error!("Privacy mode 2 rollback failed: {}", error);
+            }
         }
     }
 }
@@ -82,6 +85,7 @@ impl PrivacyModeImpl {
             displays: Vec::new(),
             virtual_displays: Vec::new(),
             virtual_displays_added: Vec::new(),
+            original_displays: None,
         }
     }
 
@@ -93,7 +97,7 @@ impl PrivacyModeImpl {
         let mut i: DWORD = 0;
         loop {
             #[allow(invalid_value)]
-            let mut dd: DISPLAY_DEVICEW = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+            let mut dd: DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
             dd.cb = std::mem::size_of::<DISPLAY_DEVICEW>() as _;
             let ok = unsafe { EnumDisplayDevicesW(std::ptr::null(), i, &mut dd as _, 0) };
             if ok == FALSE {
@@ -106,7 +110,7 @@ impl PrivacyModeImpl {
                 continue;
             }
             #[allow(invalid_value)]
-            let mut dm: DEVMODEW = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+            let mut dm: DEVMODEW = unsafe { std::mem::zeroed() };
             dm.dmSize = std::mem::size_of::<DEVMODEW>() as _;
             dm.dmDriverExtra = 0;
             unsafe {
@@ -330,14 +334,112 @@ impl PrivacyModeImpl {
         }]
     }
 
+    fn connected_virtual_displays() -> Vec<[WCHAR; 32]> {
+        let mut displays = Vec::new();
+        let mut index = 0;
+        loop {
+            let mut device: DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
+            device.cb = std::mem::size_of_val(&device) as _;
+            if unsafe { EnumDisplayDevicesW(std::ptr::null(), index, &mut device, 0) } == FALSE {
+                break;
+            }
+            index += 1;
+            if String::from_utf16_lossy(&device.DeviceString).trim_end_matches('\0')
+                != virtual_display_manager::get_cur_device_string().trim_end_matches('\0')
+            {
+                continue;
+            }
+            let mut monitor: DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
+            monitor.cb = std::mem::size_of_val(&monitor) as _;
+            if unsafe { EnumDisplayDevicesW(device.DeviceName.as_ptr(), 0, &mut monitor, 0) } != FALSE {
+                displays.push(device.DeviceName);
+            }
+        }
+        displays
+    }
+
+    fn activate_pending_virtual_displays(
+        &self, existing: &[[WCHAR; 32]], activated: &mut Vec<[WCHAR; 32]>,
+    ) -> ResultType<()> {
+        use winapi::um::wingdi::{DM_PELSHEIGHT, DM_PELSWIDTH};
+
+        let mut index = 0;
+        loop {
+            let mut device: DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
+            device.cb = std::mem::size_of_val(&device) as _;
+            if unsafe { EnumDisplayDevicesW(std::ptr::null(), index, &mut device, 0) } == FALSE {
+                break;
+            }
+            index += 1;
+            let description = String::from_utf16_lossy(&device.DeviceString);
+            if description.trim_end_matches('\0')
+                != virtual_display_manager::get_cur_device_string().trim_end_matches('\0')
+                || device.StateFlags & DISPLAY_DEVICE_ACTIVE != 0
+                || existing.contains(&device.DeviceName)
+                || activated.contains(&device.DeviceName)
+            {
+                continue;
+            }
+            let mut monitor: DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
+            monitor.cb = std::mem::size_of_val(&monitor) as _;
+            // An IDD adapter alone is not a monitor; never activate its empty slots.
+            let has_monitor = unsafe { EnumDisplayDevicesW(device.DeviceName.as_ptr(), 0, &mut monitor, 0) } != FALSE;
+            log::debug!("Privacy mode 2: pending virtual display={}, flags={}, monitor_present={}",
+                String::from_utf16_lossy(&device.DeviceName).trim_end_matches('\0'), device.StateFlags, has_monitor);
+            if !has_monitor {
+                continue;
+            }
+            let mut mode: DEVMODEW = unsafe { std::mem::zeroed() };
+            mode.dmSize = std::mem::size_of_val(&mode) as _;
+            let mut found = false;
+            for mode_index in 0..256 {
+                if unsafe { EnumDisplaySettingsExW(device.DeviceName.as_ptr(), mode_index, &mut mode, 0) } == FALSE {
+                    break;
+                }
+                if mode.dmPelsWidth == 1920 && mode.dmPelsHeight == 1080 {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                if unsafe { EnumDisplaySettingsExW(device.DeviceName.as_ptr(), 0, &mut mode, 0) } == FALSE
+                    || mode.dmPelsWidth == 0 || mode.dmPelsHeight == 0
+                {
+                    log::warn!("Privacy mode 2: connected virtual monitor has no usable mode");
+                    continue;
+                }
+            }
+            let right = self.displays.iter().map(|display| unsafe {
+                display.dm.u1.s2().dmPosition.x + display.dm.dmPelsWidth as i32
+            }).max().unwrap_or(0);
+            unsafe {
+                mode.u1.s2_mut().dmPosition.x = right;
+                mode.u1.s2_mut().dmPosition.y = 0;
+            }
+            mode.dmFields |= DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT;
+            let rc = unsafe {
+                ChangeDisplaySettingsExW(device.DeviceName.as_ptr(), &mut mode, std::ptr::null_mut(), 0, std::ptr::null_mut())
+            };
+            log::debug!("Privacy mode 2: activate connected virtual display={}, result={}",
+                String::from_utf16_lossy(&device.DeviceName).trim_end_matches('\0'), rc);
+            if rc != DISP_CHANGE_SUCCESSFUL {
+                bail!("Failed to activate virtual display: {}", Self::change_display_settings_ex_err_msg(rc));
+            }
+            activated.push(device.DeviceName);
+        }
+        Ok(())
+    }
+
     // This function will wait at most 6 seconds for the virtual displays to be ready.
     // It's ok to wait, because:
     // 1. A new thread is created to handle the async privacy mode.
     // 2. The user is usually not in a hurry to turn on the privacy mode.
     pub fn ensure_virtual_display(&mut self, is_async_mode: bool) -> ResultType<()> {
         if self.virtual_displays.is_empty() {
+            let existing_monitors = Self::connected_virtual_displays();
             let displays =
                 virtual_display_manager::plug_in_peer_request(vec![Self::default_display_modes()])?;
+            self.virtual_displays_added.extend(displays.iter().copied());
             if is_async_mode {
                 thread::sleep(Duration::from_secs(1));
             }
@@ -345,20 +447,24 @@ impl PrivacyModeImpl {
             // No physical displays, no need to use the privacy mode.
             if self.displays.is_empty() {
                 virtual_display_manager::plug_out_monitor_indices(&displays, false, false)?;
+                self.virtual_displays_added.clear();
                 bail!(NO_PHYSICAL_DISPLAYS);
             }
 
             if is_async_mode {
                 let now = std::time::Instant::now();
+                let mut activated = Vec::new();
                 while self.virtual_displays.is_empty()
                     && now.elapsed() < Duration::from_millis(5000)
                 {
+                    self.activate_pending_virtual_displays(&existing_monitors, &mut activated)?;
                     thread::sleep(Duration::from_millis(500));
                     self.set_displays();
                 }
             }
 
-            self.virtual_displays_added.extend(displays);
+            log::debug!("Privacy mode 2: physical={}, virtual={}, owned={}",
+                self.displays.len(), self.virtual_displays.len(), self.virtual_displays_added.len());
         }
 
         Ok(())
@@ -401,6 +507,20 @@ impl PrivacyModeImpl {
     }
 
     fn restore(&mut self) {
+        if let Some(snapshot) = self.original_displays.take() {
+            if !self.virtual_displays_added.is_empty() {
+                self.restore_plug_out_monitor();
+            }
+            // The polling list may already contain displays enabled by the driver.
+            // Restore the pre-request state, including connected but disabled screens.
+            if let Err(error) = snapshot.restore() {
+                log::error!("{}", error);
+                self.original_displays = Some(snapshot);
+            }
+            self.displays.clear();
+            self.virtual_displays.clear();
+            return;
+        }
         Self::restore_displays(&self.displays);
         Self::restore_displays(&self.virtual_displays);
         allow_err!(Self::commit_change_display(0));
@@ -465,11 +585,20 @@ impl PrivacyMode for PrivacyModeImpl {
             log::debug!("Privacy mode of conn {} is already on", conn_id);
             return Ok(true);
         }
+        if crate::platform::is_physical_console_session() == Some(false) {
+            log::warn!("Privacy mode 2 requires the physical console session; refusing to change displays in RDP");
+            bail!("No virtual displays.");
+        }
         self.set_displays();
         if self.displays.is_empty() {
             log::debug!("{}", NO_PHYSICAL_DISPLAYS);
             bail!(NO_PHYSICAL_DISPLAYS);
         }
+
+        if self.original_displays.is_some() {
+            bail!("The previous privacy mode display settings have not been restored.");
+        }
+        self.original_displays = Some(snapshot::DisplaySnapshot::capture()?);
 
         let is_async_mode = self.is_async_privacy_mode();
         let mut guard = TurnOnGuard {
@@ -523,10 +652,19 @@ impl PrivacyMode for PrivacyModeImpl {
         self.check_off_conn_id(conn_id)?;
         super::win_input::unhook()?;
         let _tmp_ignore_changed_holder = crate::display_service::temp_ignore_displays_changed();
+        let has_snapshot = self.original_displays.is_some();
         self.restore();
+        if has_snapshot {
+            if self.original_displays.is_some() {
+                bail!("The previous privacy mode display settings have not been restored.");
+            }
+            reset_config_reg_connectivity();
+        }
         // We need to force restore the registry connectivity.
         // This is because the registry connection may be changed by `self.restore()`, but will not be fully restored.
-        restore_reg_connectivity(false, true);
+        if !has_snapshot {
+            restore_reg_connectivity(false, true);
+        }
 
         if self.conn_id != INVALID_PRIVACY_MODE_CONN_ID {
             if let Some(state) = state {
