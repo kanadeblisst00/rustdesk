@@ -212,7 +212,7 @@ jobs:
             target: x86_64-apple-darwin
             triplet: x64-osx
           - platform: macos-arm64
-            os: macos-14
+            os: macos-15
             rust: "1.81"
             target: aarch64-apple-darwin
             triplet: arm64-osx
@@ -406,6 +406,37 @@ jobs:
             sed -i -e 's/osx_minimum_system_version = "[0-9]*.[0-9]*"/osx_minimum_system_version = "12.3"/' Cargo.toml
             sed -i -e 's/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = 12.3;/' flutter/macos/Runner.xcodeproj/project.pbxproj
           fi
+      - name: Resolve macOS Flutter dependencies with bounded retries
+        if: runner.os == 'macOS'
+        timeout-minutes: 20
+        run: |
+          python - <<'PY'
+          import os, pathlib, signal, subprocess, time
+          for attempt in range(1, 4):
+              print(f'Flutter dependency download attempt {attempt}/3', flush=True)
+              process = subprocess.Popen(['flutter', 'pub', 'get'], cwd='flutter', start_new_session=True)
+              try:
+                  status = process.wait(timeout=300)
+              except subprocess.TimeoutExpired:
+                  try:
+                      os.killpg(process.pid, signal.SIGKILL)
+                  except ProcessLookupError:
+                      pass
+                  process.wait(timeout=10)
+                  status = 124
+                  print('::warning::Flutter dependency download timed out; its process group was stopped.', flush=True)
+              if status == 0:
+                  break
+              if attempt == 3:
+                  raise SystemExit(status)
+              time.sleep(attempt * 10)
+          path = pathlib.Path('build.py')
+          source = path.read_text()
+          command = 'flutter build macos --release'
+          if source.count(command) != 1:
+              raise SystemExit('Expected one macOS Flutter build command')
+          path.write_text(source.replace(command, command + ' --no-pub', 1))
+          PY
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
         with:
           vcpkgDirectory: ${{ runner.temp }}/mcp-vcpkg
