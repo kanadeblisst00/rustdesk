@@ -1,0 +1,124 @@
+name: Cancel and restart exact MCP Release build
+on:
+  push:
+    branches: [master]
+    paths: [.github/workflows/retry-mcp-release.yml]
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: one-time-mcp-release-retry
+  cancel-in-progress: false
+jobs:
+  retry:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    steps:
+      - name: Cancel original run, then rerun the same commit and Release inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          REPO = 'kanadeblisst00/rustdesk'
+          RUN = 40645114122
+          SHA = '5d21246a09f4e52cad0b7aed1755bb315f58be8a'
+          WORKFLOW = 351087953
+          if os.environ['GITHUB_REPOSITORY'] != REPO:
+              raise SystemExit('Unexpected repository')
+          ROOT = 'https://api.github.com/repos/' + REPO
+          HEADERS = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+
+
+          def note(kind, value):
+              message = json.dumps(value, ensure_ascii=False).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::{kind} title=RustDesk Release restart::{message}', flush=True)
+
+
+          def api(path, method='GET', body=None):
+              data = None if body is None else json.dumps(body).encode()
+              request = urllib.request.Request(ROOT + path, data=data, headers=HEADERS, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=25) as response:
+                      content = response.read()
+                      if method != 'GET':
+                          note('notice', {'method': method, 'path': path, 'status': response.status, 'request_id': response.headers.get('X-GitHub-Request-Id')})
+                      return json.loads(content) if content else None
+              except urllib.error.HTTPError as error:
+                  note('warning', {'method': method, 'path': path, 'status': error.code, 'request_id': error.headers.get('X-GitHub-Request-Id')})
+                  raise
+
+
+          def current():
+              value = api(f'/actions/runs/{RUN}')
+              if value['id'] != RUN or value['head_sha'] != SHA or value['workflow_id'] != WORKFLOW or value['event'] != 'workflow_dispatch':
+                  raise RuntimeError('Run identity changed; preserve state for review')
+              return value
+
+
+          def wait_terminal():
+              for poll in range(12):
+                  value = current()
+                  if value['run_attempt'] != 1:
+                      raise RuntimeError('Run attempt changed concurrently; do not replay')
+                  if value['status'] == 'completed':
+                      return value
+                  time.sleep(5)
+              return None
+
+
+          def main():
+              value = current()
+              if value['run_attempt'] != 1:
+                  raise RuntimeError('Original attempt already changed; do not repeat restart')
+              if api(f'/actions/workflows/{WORKFLOW}')['state'] != 'active':
+                  raise RuntimeError('Build workflow is not active')
+              note('notice', {'stage': 'before_cancel', 'run_id': RUN, 'status': value['status'], 'attempt': value['run_attempt'], 'head_sha': SHA})
+              if value['status'] != 'completed':
+                  try:
+                      api(f'/actions/runs/{RUN}/cancel', 'POST')
+                  except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+                      pass
+                  value = wait_terminal()
+                  if value is None:
+                      note('notice', {'stage': 'normal_cancel_not_terminal', 'next': 'one_force_cancel'})
+                      try:
+                          api(f'/actions/runs/{RUN}/force-cancel', 'POST')
+                      except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+                          pass
+                      value = wait_terminal()
+              if value is None or value['status'] != 'completed':
+                  raise RuntimeError('Original run is not confirmed stopped after cancel and force-cancel; no restart was sent. GitHub Support may be required.')
+              if value['conclusion'] not in ['cancelled', 'failure', 'timed_out', 'startup_failure', 'stale']:
+                  raise RuntimeError('Original run completed with an unexpected conclusion; preserve for review')
+              note('notice', {'stage': 'original_stopped', 'run_id': RUN, 'status': value['status'], 'conclusion': value['conclusion'], 'attempt': value['run_attempt']})
+              try:
+                  api(f'/actions/runs/{RUN}/rerun', 'POST', {'enable_debug_logging': True})
+              except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+                  note('warning', {'stage': 'rerun_response_unknown', 'action': 'query_same_run_without_repeating_POST'})
+              for poll in range(20):
+                  value = current()
+                  if value['run_attempt'] == 2:
+                      result = {'stage': 'restart_verified', 'run_id': RUN, 'run_attempt': 2, 'head_sha': SHA, 'status': value['status'], 'conclusion': value['conclusion'], 'url': value['html_url'] + '/attempts/2', 'original_inputs_preserved': True, 'publish_release': True}
+                      note('notice', result)
+                      with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                          summary.write('```json\n' + json.dumps(result, ensure_ascii=False, indent=2) + '\n```\n')
+                      return
+                  if value['run_attempt'] != 1:
+                      raise RuntimeError('Unexpected attempt count; do not repeat restart')
+                  time.sleep(3)
+              raise RuntimeError('Restart outcome is unknown; query the SAME run without repeating POST')
+
+
+          if __name__ == '__main__':
+              try:
+                  main()
+              except Exception as error:
+                  note('error', {'stage': 'recovery_requires_review', 'error_type': type(error).__name__, 'message': str(error)})
+                  raise
+          PYCODE
