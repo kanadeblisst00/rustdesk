@@ -194,7 +194,7 @@ class ProcessWorkerTest(unittest.TestCase):
     def test_heartbeat_sharing_failure_does_not_kill_the_command(self):
         result = self.run_worker(
             "import pathlib,time; "
-            "f=pathlib.Path('job/state.json').open('rb'); "
+            "f=pathlib.Path('entry-test/state.json').open('rb'); "
             "time.sleep(3); f.close(); print('survived-state-reader')")
         self.assertTrue(result["state"]["success"], result)
         self.assertFalse(result["state"]["termination_requested"])
