@@ -36,7 +36,7 @@ Windows、macOS 14+ 和 Linux X11 本机桌面控制需额外启用 `mcp-local`�
 
 ### 内置私有服务器
 
-本 fork 的 MCP 构建会将 ID 服务器 `removed-server.invalid:21116`、中继 `removed-server.invalid:21117` 和公钥 `[REMOVED_OLD_SERVER_PUBLIC_KEY]` 编译进客户端。这是公开的连接配置，不是服务端私钥或远程设备密码。
+本 fork 的 MCP 构建会将 ID 服务器 `rustdesk.pygrower.cn:21116`、中继 `rustdesk.pygrower.cn:21117` 和公钥 `6YnpcT6BMeMsqgLL79JbYHl5I13gbGx+2VW7HtdFg74=` 编译进客户端。这是公开的连接配置，不是服务端私钥或远程设备密码。
 
 采用教程的源码常量方案：在当前锁定的 `hbb_common` 上应用 `.github/patches/agent-mcp-server.diff`，修改 `RENDEZVOUS_SERVERS`、`RS_PUB_KEY`，并为 `custom-rendezvous-server`、`relay-server`、`key` 添加默认值。设置页读取的是配置选项而非编译常量，因此三项都提供默认配置，确保新配置的 ID、中继和 Key 输入框完整预填。不切换子模块分支，不启用上游发布流程或 Actions 写权限。构建工作流会同时校验源码中的常量和设置默认值；macOS 隔离包还执行原生诊断命令验证 `built_in_server` 与 `default_server_options`。独立 MCP 工具包附带 `SERVER-CONFIG.json`。
 
