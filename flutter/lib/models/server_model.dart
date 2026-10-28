@@ -16,6 +16,7 @@ import '../desktop/pages/server_page.dart' as desktop;
 import '../desktop/widgets/tabbar_widget.dart';
 import '../mobile/pages/server_page.dart';
 import 'model.dart';
+import 'local_service_status.dart';
 
 const kLoginDialogTag = "LOGIN";
 
@@ -33,6 +34,7 @@ class ServerModel with ChangeNotifier {
   bool _showElevation = false;
   bool hideCm = false;
   int _connectStatus = 0; // Rendezvous Server status
+  LocalServiceStatus _localServiceStatus = LocalServiceStatus.connected;
   String _verificationMethod = "";
   String _temporaryPasswordLength = "";
   bool _allowNumericOneTimePassword = false;
@@ -67,6 +69,9 @@ class ServerModel with ChangeNotifier {
   bool get showElevation => _showElevation;
 
   int get connectStatus => _connectStatus;
+
+  bool get localServiceConnected =>
+      _localServiceStatus == LocalServiceStatus.connected;
 
   String get verificationMethod {
     final index = [
@@ -151,8 +156,12 @@ class ServerModel with ChangeNotifier {
       final connectionStatus =
           jsonDecode(await bind.mainGetConnectStatus()) as Map<String, dynamic>;
       final statusNum = connectionStatus['status_num'] as int;
-      if (statusNum != _connectStatus) {
+      final localServiceStatus =
+          LocalServiceStatus.fromConnectionStatus(connectionStatus);
+      if (statusNum != _connectStatus ||
+          localServiceStatus != _localServiceStatus) {
         _connectStatus = statusNum;
+        _localServiceStatus = localServiceStatus;
         notifyListeners();
       }
 
@@ -250,6 +259,8 @@ class ServerModel with ChangeNotifier {
         verificationMethod == kUsePermanentPassword ||
         _approveMode == 'click') {
       _serverPasswd.text = '-';
+    } else if (_localServiceStatus.passwordPlaceholder != null) {
+      _serverPasswd.text = translate(_localServiceStatus.passwordPlaceholder!);
     } else {
       if (_serverPasswd.text != temporaryPassword &&
           temporaryPassword.isNotEmpty) {

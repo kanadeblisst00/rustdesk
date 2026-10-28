@@ -785,5 +785,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Rotate local MCP token", ""),
         ("Stop local MCP control", ""),
         ("agent-mcp-local-tip", ""),
+        ("Connecting to local service...", ""),
+        ("Local service unavailable", ""),
     ].iter().cloned().collect();
 }

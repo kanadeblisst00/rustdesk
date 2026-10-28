@@ -37,6 +37,8 @@ pub type Children = Arc<Mutex<(bool, HashMap<(String, String), Child>)>>;
 #[derive(Clone, Debug, Serialize)]
 pub struct UiStatus {
     pub status_num: i32,
+    #[cfg(feature = "flutter")]
+    pub ipc_status: &'static str,
     #[cfg(not(feature = "flutter"))]
     pub key_confirmed: bool,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -57,6 +59,8 @@ pub struct LoginDeviceInfo {
 lazy_static::lazy_static! {
     static ref UI_STATUS : Arc<Mutex<UiStatus>> = Arc::new(Mutex::new(UiStatus{
         status_num: 0,
+        #[cfg(feature = "flutter")]
+        ipc_status: "connecting",
         #[cfg(not(feature = "flutter"))]
         key_confirmed: false,
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1402,6 +1406,8 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
                                 }
                                 *UI_STATUS.lock().unwrap() = UiStatus {
                                     status_num: x as _,
+                                    #[cfg(feature = "flutter")]
+                                    ipc_status: "connected",
                                     #[cfg(not(feature = "flutter"))]
                                     key_confirmed: _c,
                                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1445,6 +1451,12 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
                 }
             }
         }
+        #[cfg(feature = "flutter")]
+        {
+            UI_STATUS.lock().unwrap().ipc_status = "disconnected";
+            *OPTION_SYNCED.lock().unwrap() = false;
+            TEMPORARY_PASSWD.lock().unwrap().clear();
+        }
         if !reconnect {
             OPTIONS
                 .lock()
@@ -1454,6 +1466,8 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
         }
         *UI_STATUS.lock().unwrap() = UiStatus {
             status_num: -1,
+            #[cfg(feature = "flutter")]
+            ipc_status: "disconnected",
             #[cfg(not(feature = "flutter"))]
             key_confirmed,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
