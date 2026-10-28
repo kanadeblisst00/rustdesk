@@ -1,6 +1,9 @@
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
+import io
 import json
+import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -119,6 +122,61 @@ class InvalidExecutableDiagnosticsTest(unittest.TestCase):
             with self.subTest(override=override):
                 with self.assertRaises(AssertionError):
                     self.check_diagnostics(216, 216, **override)
+
+
+class HeartbeatReaderFixtureTest(unittest.TestCase):
+    def run_script(self, denied=0, exists=True):
+        case = worker.ProcessWorkerTest()
+        result = {'state': {'success': True, 'termination_requested': False,
+                           'monitor_warning': {'operation': 'MoveFileExW', 'target': 'state.json'}},
+                  'stdout': b'survived-state-reader'}
+        method = worker.ProcessWorkerTest.test_heartbeat_sharing_failure_does_not_kill_the_command
+        with patch.object(case, 'run_worker', return_value=result) as run:
+            getattr(method, '__wrapped__', method)(case)
+        script = run.call_args.args[0]
+        original_open = Path.open
+        self.attempts = 0
+
+        def sharing_open(path, *args, **kwargs):
+            if path.name == 'state.json':
+                self.attempts += 1
+                if self.attempts <= denied:
+                    raise PermissionError(13, 'Simulated Windows sharing violation', str(path))
+            return original_open(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'entry-test/state.json'
+            state.parent.mkdir()
+            if exists:
+                state.write_text('{}', encoding='utf-8')
+            output = io.StringIO()
+            previous = os.getcwd()
+            try:
+                os.chdir(directory)
+                with patch.object(Path, 'open', sharing_open), patch.object(worker.time, 'sleep'), redirect_stdout(output):
+                    exec(script, {})
+            finally:
+                os.chdir(previous)
+            return output.getvalue()
+
+    def test_reader_opens_the_real_fixture(self):
+        self.assertEqual(self.run_script().strip(), 'survived-state-reader')
+        self.assertEqual(self.attempts, 1)
+
+    def test_transient_sharing_violations_are_retried(self):
+        self.assertEqual(self.run_script(denied=3).strip(), 'survived-state-reader')
+        self.assertEqual(self.attempts, 4)
+
+    def test_permanent_permission_failure_has_a_deadline(self):
+        with patch.object(worker.time, 'monotonic', side_effect=[0, 1, 6]):
+            with self.assertRaises(PermissionError):
+                self.run_script(denied=100)
+        self.assertEqual(self.attempts, 2)
+
+    def test_missing_fixture_is_not_retried(self):
+        with self.assertRaises(FileNotFoundError):
+            self.run_script(exists=False)
+        self.assertEqual(self.attempts, 1)
 
 
 if __name__ == '__main__':

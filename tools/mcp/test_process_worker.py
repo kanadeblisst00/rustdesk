@@ -193,8 +193,14 @@ class ProcessWorkerTest(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "Windows file sharing")
     def test_heartbeat_sharing_failure_does_not_kill_the_command(self):
         result = self.run_worker(
-            "import pathlib,time; "
-            "f=pathlib.Path('entry-test/state.json').open('rb'); "
+            "import pathlib,time; deadline=time.monotonic()+5\n"
+            "while True:\n"
+            "    try:\n"
+            "        f=pathlib.Path('entry-test/state.json').open('rb')\n"
+            "        break\n"
+            "    except PermissionError:\n"
+            "        if time.monotonic() >= deadline: raise\n"
+            "        time.sleep(0.02)\n"
             "time.sleep(3); f.close(); print('survived-state-reader')")
         self.assertTrue(result["state"]["success"], result)
         self.assertFalse(result["state"]["termination_requested"])
