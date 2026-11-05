@@ -58,3 +58,14 @@ libsciter.dylib
 flutter/web/
 # libdrmtap is cloned at build time by build.py (not a submodule)
 /third_party/libdrmtap/
+# Local build, release, and diagnostic reports
+/reports/build-attempt-20261016/
+/reports/build-validation-20261016/
+/reports/connection-diagnosis-20261019.md
+/reports/installer-packaging-20261016/
+/reports/privacy-mode2-diagnosis-20261019.md
+/reports/privacy-mode2-no-displays-20261019.md
+/reports/rebuild-20261016/
+/reports/release-20261016/
+/reports/release-recovery-30-20261016/
+/reports/xcode-install-20261016/
